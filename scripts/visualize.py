@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from torchvision import datasets  # noqa: E402
 
+from src.data import build_dataset  # noqa: E402
 from src.utils import load_config  # noqa: E402
 
 CIFAR10_CLASSES = [
@@ -39,6 +40,17 @@ def _save(fig, name: str) -> None:
     )
     plt.close(fig)
     print(f"  Saved {path}")
+
+
+def _add_bar_labels(ax, bars, fontsize=8):
+    for bar in bars:
+        h = bar.get_height()
+        ax.text(
+            bar.get_x() + bar.get_width() / 2, h,
+            str(int(h)),
+            ha="center", va="bottom",
+            fontsize=fontsize,
+        )
 
 
 def plot_sample_images(data_dir: str = "data"):
@@ -81,44 +93,56 @@ def plot_sample_images(data_dir: str = "data"):
     _save(fig, "sample_images.png")
 
 
-def plot_class_distribution(
-    data_dir: str = "data",
-):
-    """Bar chart of class counts for train/test."""
-    train_ds = datasets.CIFAR10(
-        root=data_dir, train=True, download=True,
+def plot_class_distribution(cfg: dict):
+    """Side-by-side: imbalanced train vs balanced test.
+    """
+    train_ds = build_dataset(cfg, split="train")
+    test_ds = build_dataset(cfg, split="val")
+
+    train_targets = (
+        list(train_ds.targets)
+        if hasattr(train_ds, "targets")
+        else [train_ds[i][1] for i in range(len(train_ds))]
     )
-    test_ds = datasets.CIFAR10(
-        root=data_dir, train=False, download=True,
+    test_targets = (
+        list(test_ds.targets)
+        if hasattr(test_ds, "targets")
+        else [test_ds[i][1] for i in range(len(test_ds))]
     )
 
-    train_counts = Counter(train_ds.targets)
-    test_counts = Counter(test_ds.targets)
+    train_counts = Counter(train_targets)
+    test_counts = Counter(test_targets)
 
     x = np.arange(len(CIFAR10_CLASSES))
     width = 0.35
 
     train_vals = [
-        train_counts[i] for i in range(len(x))
+        train_counts.get(i, 0) for i in range(len(x))
     ]
     test_vals = [
-        test_counts[i] for i in range(len(x))
+        test_counts.get(i, 0) for i in range(len(x))
     ]
+
+    imb_cfg = cfg["data"].get("imbalance", {})
+    ratio = imb_cfg.get("ratio", 1)
 
     fig, ax = plt.subplots(figsize=(12, 5))
     bars1 = ax.bar(
         x - width / 2, train_vals, width,
-        label="Train", color="#4C72B0", alpha=0.85,
+        label="Train (imbalanced)",
+        color="#C44E52", alpha=0.85,
     )
     bars2 = ax.bar(
         x + width / 2, test_vals, width,
-        label="Test", color="#DD8452", alpha=0.85,
+        label="Test (balanced)",
+        color="#4C72B0", alpha=0.85,
     )
 
     ax.set_xlabel("Class", fontsize=12)
     ax.set_ylabel("Number of Images", fontsize=12)
     ax.set_title(
-        "CIFAR-10 Class Distribution",
+        f"CIFAR-10 Class Distribution "
+        f"(Imbalance Ratio {ratio}:1)",
         fontsize=14, fontweight="bold",
     )
     ax.set_xticks(x)
@@ -128,20 +152,22 @@ def plot_class_distribution(
     ax.legend()
     ax.grid(axis="y", alpha=0.3)
 
-    for bar in bars1:
-        h = bar.get_height()
-        ax.text(
-            bar.get_x() + bar.get_width() / 2, h,
-            str(int(h)),
-            ha="center", va="bottom", fontsize=8,
-        )
-    for bar in bars2:
-        h = bar.get_height()
-        ax.text(
-            bar.get_x() + bar.get_width() / 2, h,
-            str(int(h)),
-            ha="center", va="bottom", fontsize=8,
-        )
+    _add_bar_labels(ax, bars1)
+    _add_bar_labels(ax, bars2)
+
+    total_train = sum(train_vals)
+    total_orig = len(CIFAR10_CLASSES) * 5000
+    ax.annotate(
+        f"Total train: {total_train:,} "
+        f"(from {total_orig:,})",
+        xy=(0.98, 0.95),
+        xycoords="axes fraction",
+        ha="right", fontsize=10,
+        bbox=dict(
+            boxstyle="round,pad=0.3",
+            facecolor="wheat", alpha=0.5,
+        ),
+    )
 
     _save(fig, "class_distribution.png")
 
@@ -208,7 +234,7 @@ def plot_training_curves(
     ax2.grid(alpha=0.3)
 
     fig.suptitle(
-        "Training Curves",
+        "Training Curves (Imbalanced CIFAR-10)",
         fontsize=14, fontweight="bold",
     )
     fig.tight_layout()
@@ -338,7 +364,7 @@ def main():
     plot_sample_images(data_dir)
 
     print("[2/4] Class distribution")
-    plot_class_distribution(data_dir)
+    plot_class_distribution(cfg)
 
     print("[3/4] Training curves")
     plot_training_curves()

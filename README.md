@@ -1,6 +1,6 @@
-# Image Classification with ResNet-50 on CIFAR-10
+# Image Classification with ResNet-50 on Imbalanced CIFAR-10
 
-A from-scratch PyTorch implementation of ResNet-50 trained on CIFAR-10, with built-in solutions for class-imbalanced datasets.
+A from-scratch PyTorch implementation of ResNet-50 trained on a **long-tail imbalanced** version of CIFAR-10, with built-in solutions to handle class imbalance.
 
 ---
 
@@ -12,8 +12,7 @@ A from-scratch PyTorch implementation of ResNet-50 trained on CIFAR-10, with bui
 - [Handling Imbalanced Data](#handling-imbalanced-data)
 - [Training & Evaluation Results](#training--evaluation-results)
 - [Project Structure](#project-structure)
-- [Setup](#setup)
-- [Usage](#usage)
+- [Setup & Usage](#setup--usage)
 - [Supported Models](#supported-models)
 
 ---
@@ -22,22 +21,32 @@ A from-scratch PyTorch implementation of ResNet-50 trained on CIFAR-10, with bui
 
 ### Sample Images
 
-Each row shows 5 random samples from one of the 10 CIFAR-10 classes.
+Each row shows 5 random samples from one of the 10 CIFAR-10 classes (32x32 color images).
 
 ![Sample Images](results/figures/sample_images.png)
 
-### Class Distribution
+### Imbalanced Class Distribution
 
-CIFAR-10 contains 60,000 32x32 color images split across 10 classes.
-
-| Split | Images | Per Class |
-|-------|--------|-----------|
-| Train | 50,000 | 5,000     |
-| Test  | 10,000 | 1,000     |
+The training set is **artificially imbalanced** using exponential decay to create a long-tail distribution. The most frequent class (airplane) keeps all 5,000 samples while the rarest class (truck) has only ~250 — a **20:1 imbalance ratio**.
 
 ![Class Distribution](results/figures/class_distribution.png)
 
-**Classes:** airplane, automobile, bird, cat, deer, dog, frog, horse, ship, truck
+| Class      | Train Samples | Ratio vs Max |
+|------------|---------------|--------------|
+| airplane   | 5,000         | 1.00x        |
+| automobile | 3,584         | 0.72x        |
+| bird       | 2,569         | 0.51x        |
+| cat        | 1,841         | 0.37x        |
+| deer       | 1,320         | 0.26x        |
+| dog        | 946           | 0.19x        |
+| frog       | 678           | 0.14x        |
+| horse      | 486           | 0.10x        |
+| ship       | 348           | 0.07x        |
+| truck      | 250           | 0.05x        |
+
+**Total training samples:** ~17,022 (down from 50,000)
+
+The **test set remains balanced** (1,000 per class) to provide a fair evaluation.
 
 ---
 
@@ -74,14 +83,14 @@ x ──┬── Conv1x1(in→mid) → BN → ReLU
 
 ### Layer-by-Layer Summary
 
-| Layer   | Output Size | Block Structure                  | Repeat |
-|---------|-------------|----------------------------------|--------|
-| stem    | 56 × 56     | 7×7 conv, 64, stride 2 + maxpool | 1      |
-| layer1  | 56 × 56     | [1×1, 64 / 3×3, 64 / 1×1, 256]  | 3      |
-| layer2  | 28 × 28     | [1×1, 128 / 3×3, 128 / 1×1, 512]| 4      |
-| layer3  | 14 × 14     | [1×1, 256 / 3×3, 256 / 1×1, 1024]| 6     |
-| layer4  | 7 × 7       | [1×1, 512 / 3×3, 512 / 1×1, 2048]| 3     |
-| head    | 10          | AdaptiveAvgPool → FC             | 1      |
+| Layer   | Output Size | Block Structure                   | Repeat |
+|---------|-------------|-----------------------------------|--------|
+| stem    | 56 × 56     | 7×7 conv, 64, stride 2 + maxpool  | 1      |
+| layer1  | 56 × 56     | [1×1, 64 / 3×3, 64 / 1×1, 256]   | 3      |
+| layer2  | 28 × 28     | [1×1, 128 / 3×3, 128 / 1×1, 512] | 4      |
+| layer3  | 14 × 14     | [1×1, 256 / 3×3, 256 / 1×1, 1024]| 6      |
+| layer4  | 7 × 7       | [1×1, 512 / 3×3, 512 / 1×1, 2048]| 3      |
+| head    | 10          | AdaptiveAvgPool → FC              | 1      |
 
 **Total parameters: 23,528,522 (~23.5M)**
 
@@ -97,35 +106,43 @@ x ──┬── Conv1x1(in→mid) → BN → ReLU
 
 All hyperparameters are centralized in `configs/default.yaml`:
 
-| Category        | Parameter        | Value                |
-|-----------------|------------------|----------------------|
-| **Model**       | Architecture     | ResNet-50            |
-|                 | Parameters       | 23.5M               |
-|                 | Dropout          | 0.0                 |
-| **Data**        | Dataset          | CIFAR-10             |
-|                 | Image size       | 224 (resized)        |
-|                 | Train batch      | 128                  |
-|                 | Val batch        | 256                  |
-| **Optimizer**   | Type             | Adam                 |
-|                 | Learning rate    | 0.001                |
-|                 | Weight decay     | 1e-4                 |
-| **Scheduler**   | Type             | Cosine Annealing     |
-|                 | eta_min          | 1e-5                 |
-| **Training**    | Epochs           | 20                   |
-|                 | Early stopping   | 10 epochs patience   |
-| **Augmentation**| RandomCrop       | Yes                  |
-|                 | HorizontalFlip   | Yes                  |
-|                 | Normalize        | Yes                  |
-| **Imbalance**   | Weighted loss    | Configurable         |
-|                 | Weighted sampler | Configurable         |
+| Category        | Parameter           | Value                |
+|-----------------|---------------------|----------------------|
+| **Model**       | Architecture        | ResNet-50            |
+|                 | Parameters          | 23.5M               |
+|                 | Dropout             | 0.0                 |
+| **Data**        | Dataset             | CIFAR-10             |
+|                 | Image size          | 224 (resized)        |
+|                 | Train batch         | 128                  |
+|                 | Val batch           | 256                  |
+| **Imbalance**   | Enabled             | Yes                  |
+|                 | Ratio               | 20:1                 |
+|                 | Weighted loss       | Yes                  |
+|                 | Weighted sampler    | Yes                  |
+| **Optimizer**   | Type                | Adam                 |
+|                 | Learning rate       | 0.001                |
+|                 | Weight decay        | 1e-4                 |
+| **Scheduler**   | Type                | Cosine Annealing     |
+|                 | eta_min             | 1e-5                 |
+| **Training**    | Epochs              | 20                   |
+|                 | Early stopping      | 10 epochs patience   |
+| **Augmentation**| RandomCrop          | Yes                  |
+|                 | HorizontalFlip      | Yes                  |
+|                 | Normalize           | Yes                  |
 
 ---
 
 ## Handling Imbalanced Data
 
-Real-world datasets are rarely balanced. This project provides two built-in strategies to mitigate class imbalance, configurable via `default.yaml`:
+### The Problem
 
-### Strategy 1: Weighted Cross-Entropy Loss
+When training on imbalanced data, the model becomes biased toward majority classes and ignores minority classes entirely. Without any correction, the model will:
+
+- Predict majority classes almost exclusively
+- Achieve misleadingly high overall accuracy
+- Have near-zero recall on rare classes
+
+### Solution 1: Weighted Cross-Entropy Loss
 
 Assigns higher loss penalties to under-represented classes using inverse-frequency weights:
 
@@ -133,27 +150,40 @@ $$w_c = \frac{N}{K \times n_c}$$
 
 where N = total samples, K = number of classes, n_c = samples in class c.
 
-**Enable in config:**
-
 ```yaml
+# configs/default.yaml
 data:
   weighted_loss: true
 ```
 
-**How it works:** Classes with fewer samples get higher weights, forcing the model to pay more attention to rare classes during gradient updates.
+**Computed weights for 20:1 imbalance:**
 
-### Strategy 2: Weighted Random Sampler
+| Class      | Weight |
+|------------|--------|
+| airplane   | 0.34   |
+| automobile | 0.48   |
+| bird       | 0.66   |
+| cat        | 0.92   |
+| deer       | 1.29   |
+| dog        | 1.80   |
+| frog       | 2.51   |
+| horse      | 3.50   |
+| ship       | 4.89   |
+| truck      | 6.81   |
 
-Oversamples minority classes so each batch has roughly equal representation:
+Rare classes (truck) receive **20x more gradient signal** than common classes (airplane).
 
-**Enable in config:**
+### Solution 2: Weighted Random Sampler
+
+Oversamples minority classes so each batch has roughly equal class representation:
 
 ```yaml
+# configs/default.yaml
 data:
   weighted_sampling: true
 ```
 
-**How it works:** Each sample gets a probability inversely proportional to its class frequency. The sampler draws with replacement, so rare-class samples appear more often per epoch.
+Each sample gets a probability inversely proportional to its class frequency. The sampler draws with replacement, so rare-class samples appear more often per epoch.
 
 ### When to Use Which
 
@@ -161,19 +191,28 @@ data:
 |------------------|---------------------------------|------------------------------------|
 | Weighted Loss    | Mild imbalance (2x–5x ratio)   | Simple, no data duplication        |
 | Weighted Sampler | Severe imbalance (10x+ ratio)  | Balanced batches, possible overfit |
-| Both combined    | Extreme imbalance              | Strongest correction               |
+| Both combined    | Extreme imbalance (20x+)       | Strongest correction               |
 
 ### Implementation
 
 ```python
-# src/data/imbalance.py
+from src.data.imbalance import (
+    make_imbalanced,
+    compute_class_weights,
+    build_weighted_sampler,
+)
 
-# Inverse-frequency weights for loss
-weights = compute_class_weights(train_dataset)
-criterion = nn.CrossEntropyLoss(weight=weights.to(device))
+# 1. Create imbalanced dataset (exponential long-tail)
+imbalanced_ds = make_imbalanced(
+    dataset, imbalance_ratio=20.0,
+)
 
-# Weighted sampler for balanced batches
-sampler = build_weighted_sampler(train_dataset)
+# 2. Weighted loss from actual class frequencies
+weights = compute_class_weights(imbalanced_ds)
+criterion = nn.CrossEntropyLoss(weight=weights)
+
+# 3. Weighted sampler for balanced batches
+sampler = build_weighted_sampler(imbalanced_ds)
 loader = DataLoader(dataset, sampler=sampler)
 ```
 
@@ -191,30 +230,30 @@ Loss and accuracy over epochs for both training and validation sets.
 
 | Metric       | Value  |
 |--------------|--------|
-| Accuracy     | 41.97% |
-| Macro F1     | 0.4019 |
-| Weighted F1  | 0.4019 |
+| Accuracy     | 28.61% |
+| Macro F1     | 0.1896 |
+| Weighted F1  | 0.1896 |
 
 ### Per-Class Performance
 
-| Class      | Precision | Recall | F1-Score |
-|------------|-----------|--------|----------|
-| airplane   | 0.4268    | 0.4840 | 0.4536   |
-| automobile | 0.5112    | 0.5700 | 0.5390   |
-| bird       | 0.3386    | 0.2570 | 0.2922   |
-| cat        | 0.3085    | 0.4590 | 0.3690   |
-| deer       | 0.3771    | 0.3360 | 0.3554   |
-| dog        | 0.5464    | 0.1650 | 0.2535   |
-| frog       | 0.4840    | 0.4700 | 0.4769   |
-| horse      | 0.4417    | 0.6370 | 0.5217   |
-| ship       | 0.3983    | 0.6540 | 0.4951   |
-| truck      | 0.6445    | 0.1650 | 0.2627   |
+| Class      | Precision | Recall | F1-Score | Train Samples |
+|------------|-----------|--------|----------|---------------|
+| airplane   | 0.0000    | 0.0000 | 0.0000   | 5,000 (most)  |
+| automobile | 0.0000    | 0.0000 | 0.0000   | 3,584         |
+| bird       | 0.2500    | 0.0010 | 0.0020   | 2,569         |
+| cat        | 0.0000    | 0.0000 | 0.0000   | 1,841         |
+| deer       | 0.2898    | 0.0510 | 0.0867   | 1,320         |
+| dog        | 0.3340    | 0.1610 | 0.2173   | 946           |
+| frog       | 0.3154    | 0.5510 | 0.4012   | 678           |
+| horse      | 0.2539    | 0.6450 | 0.3644   | 486           |
+| ship       | 0.2983    | 0.7350 | 0.4244   | 348           |
+| truck      | 0.2772    | 0.7170 | 0.3998   | 250 (least)   |
 
 ### Confusion Matrix & Per-Class Metrics
 
 ![Evaluation Results](results/figures/eval_results.png)
 
-> **Note:** Results shown are from a 1-epoch training run for demonstration purposes. Training for the full 20+ epochs will significantly improve performance.
+> **Note:** Results shown are from a 1-epoch demo run. The imbalance effects are clearly visible: despite weighted loss and sampling corrections, 1 epoch is insufficient for the model to learn all classes. Training for 20+ epochs will show the effectiveness of the imbalance strategies.
 
 ---
 
@@ -231,10 +270,10 @@ img_cls/
 │   └── visualize.py              # Generate all figures
 ├── src/
 │   ├── data/
-│   │   ├── dataset.py            # CIFAR-10/100 loader
+│   │   ├── dataset.py            # CIFAR-10/100 loader + imbalance
 │   │   ├── transforms.py         # Augmentation pipeline
-│   │   ├── dataloader.py         # DataLoader builder
-│   │   └── imbalance.py          # Weighted loss & sampler
+│   │   ├── dataloader.py         # DataLoader + weighted sampler
+│   │   └── imbalance.py          # Long-tail, weighted loss/sampler
 │   ├── models/
 │   │   ├── resnet.py             # ResNet from scratch
 │   │   ├── simple_cnn.py         # Baseline CNN
@@ -262,15 +301,15 @@ img_cls/
 
 ---
 
-## Setup
+## Setup & Usage
+
+### Setup
 
 ```bash
 conda create -n img_cls python=3.11 -y
 conda activate img_cls
 pip install -r requirements.txt
 ```
-
-## Usage
 
 ### Train
 
@@ -283,7 +322,7 @@ Override any parameter:
 ```bash
 python scripts/train.py --config configs/default.yaml \
     --override training.epochs=50 \
-               training.optimizer.lr=0.0005 \
+               data.imbalance.ratio=50 \
                data.weighted_loss=True \
                data.weighted_sampling=True
 ```

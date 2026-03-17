@@ -9,6 +9,7 @@ build/
 venv/
 env/
 
+data/
 *.pth
 *.pt
 

@@ -18,7 +18,6 @@ import torch.nn as nn  # noqa: E402
 
 from src.data import (  # noqa: E402
     build_dataloaders, compute_class_weights,
-    build_dataset,
 )
 from src.models import build_model  # noqa: E402
 from src.training import (  # noqa: E402
@@ -92,13 +91,16 @@ def main():
         "weighted_loss", False,
     )
     if use_weighted_loss:
-        train_ds = build_dataset(cfg, split="train")
+        train_ds = loaders["train"].dataset
         weights = compute_class_weights(train_ds)
         weights = weights.to(device)
-        criterion = nn.CrossEntropyLoss(weight=weights)
+        criterion = nn.CrossEntropyLoss(
+            weight=weights,
+        )
         logger.info(
             "Using weighted loss for imbalance"
         )
+        logger.info(f"Class weights: {weights}")
     else:
         criterion = nn.CrossEntropyLoss()
 
