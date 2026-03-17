@@ -8,21 +8,24 @@ from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from pathlib import Path
 
 sys.path.insert(
     0, str(Path(__file__).resolve().parent.parent),
 )
 
-import torch.nn as nn  # noqa: E402
-
 from src.data import (  # noqa: E402
     build_dataloaders, compute_class_weights,
+)
+from src.data.imbalance import (  # noqa: E402
+    _extract_targets,
 )
 from src.models import build_model  # noqa: E402
 from src.training import (  # noqa: E402
     Trainer, build_optimizer, build_scheduler,
 )
+from src.training.losses import build_loss  # noqa: E402
 from src.utils import (  # noqa: E402
     load_config, merge_configs, parse_cli_overrides,
     setup_logger, set_seed, get_device,
@@ -63,6 +66,14 @@ def _log_data_info(logger, loaders: dict) -> None:
         )
 
 
+def _get_class_info(dataset):
+    """Extract per-class sample counts from dataset."""
+    targets = _extract_targets(dataset)
+    counts = Counter(targets)
+    n_classes = len(counts)
+    return [counts[i] for i in range(n_classes)]
+
+
 def main():
     args = _parse_args()
     cfg = _build_config(args)
@@ -87,22 +98,34 @@ def main():
     optimizer = build_optimizer(model, cfg)
     scheduler = build_scheduler(optimizer, cfg)
 
-    use_weighted_loss = cfg["data"].get(
+    train_ds = loaders["train"].dataset
+    samples_per_class = _get_class_info(train_ds)
+
+    use_weighted = cfg["data"].get(
         "weighted_loss", False,
     )
-    if use_weighted_loss:
-        train_ds = loaders["train"].dataset
-        weights = compute_class_weights(train_ds)
-        weights = weights.to(device)
-        criterion = nn.CrossEntropyLoss(
-            weight=weights,
-        )
-        logger.info(
-            "Using weighted loss for imbalance"
-        )
-        logger.info(f"Class weights: {weights}")
-    else:
-        criterion = nn.CrossEntropyLoss()
+    class_weights = (
+        compute_class_weights(train_ds)
+        if use_weighted
+        else None
+    )
+
+    loss_name = cfg.get("loss", {}).get("name", "ce")
+    criterion = build_loss(
+        cfg, device,
+        samples_per_class=samples_per_class,
+        class_weights=class_weights,
+    )
+    logger.info(
+        f"Loss: {loss_name}"
+        f" | weighted={use_weighted}"
+    )
+
+    mix_mode = cfg["training"].get(
+        "mixup", {},
+    ).get("mode", "none")
+    if mix_mode != "none":
+        logger.info(f"Mixup: {mix_mode}")
 
     trainer = Trainer(
         model, optimizer, scheduler,

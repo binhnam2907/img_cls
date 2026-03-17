@@ -1,38 +1,30 @@
 project:
-  name: "cifar10_resnet50"
+  name: "s7_cutmix"
   seed: 42
-  device: "auto"  # auto, cpu, cuda, mps
-  output_dir: "results"
+  device: "auto"
+  output_dir: "results/s7_cutmix"
 
 data:
   dataset: "cifar10"
   data_dir: "data"
   num_workers: 4
   pin_memory: true
-
   custom:
     num_classes: 10
     image_size: 224
-
   train:
     batch_size: 128
     shuffle: true
     drop_last: true
-
   val:
     batch_size: 256
     shuffle: false
     drop_last: false
-
-  # Long-tail imbalance (training set only)
   imbalance:
     enabled: true
-    ratio: 20    # max_class / min_class
-
-  # Imbalanced data strategies (data-level)
-  weighted_sampling: true   # WeightedRandomSampler
-  weighted_loss: true       # inverse-freq class weights
-
+    ratio: 20
+  weighted_sampling: false
+  weighted_loss: false
   augmentation:
     random_crop: true
     random_horizontal_flip: true
@@ -46,30 +38,24 @@ model:
   num_classes: 10
   dropout: 0.0
 
-# Loss function (algorithm-level)
-#   Options: ce, focal, cb, label_smoothing, cb_focal
 loss:
-  name: "cb_focal"      # industry best
-  gamma: 2.0            # focal loss focusing param
-  beta: 0.9999          # CB effective number param
-  smoothing: 0.1        # label smoothing epsilon
+  name: "ce"
+  gamma: 2.0
+  beta: 0.9999
+  smoothing: 0.1
 
 training:
   epochs: 20
   gradient_clip: 0.0
-
-  # Mixup / CutMix (augmentation-level)
   mixup:
-    mode: "none"   # none, mixup, cutmix
-    alpha: 0.4     # Beta distribution param
-
+    mode: "cutmix"
+    alpha: 1.0
   optimizer:
     name: "adam"
     lr: 0.001
     weight_decay: 0.0001
     momentum: 0.9
     nesterov: true
-
   scheduler:
     name: "cosine"
     step_size: 30
@@ -78,7 +64,6 @@ training:
     eta_min: 0.00001
     patience: 10
     factor: 0.1
-
   early_stopping:
     enabled: true
     patience: 10

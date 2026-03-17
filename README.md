@@ -1,6 +1,6 @@
 # Image Classification with ResNet-50 on Imbalanced CIFAR-10
 
-A from-scratch PyTorch implementation of ResNet-50 trained on a **long-tail imbalanced** version of CIFAR-10, with built-in solutions to handle class imbalance.
+A from-scratch PyTorch implementation of ResNet-50 trained on a **long-tail imbalanced** version of CIFAR-10, with **7 independent imbalance strategies** and **1 combined industry-best solution** — all benchmarked side-by-side.
 
 ---
 
@@ -8,12 +8,18 @@ A from-scratch PyTorch implementation of ResNet-50 trained on a **long-tail imba
 
 - [Dataset Visualization](#dataset-visualization)
 - [Model Architecture](#model-architecture)
-- [Configuration](#configuration)
-- [Handling Imbalanced Data](#handling-imbalanced-data)
-- [Training & Evaluation Results](#training--evaluation-results)
+- [Imbalance Strategies (7 + 1 Combined)](#imbalance-strategies)
+  - [S1. Weighted Cross-Entropy](#s1-weighted-cross-entropy-cost-sensitive-learning)
+  - [S2. Oversampling](#s2-oversampling-weighted-random-sampler)
+  - [S3. Focal Loss](#s3-focal-loss)
+  - [S4. Class-Balanced Loss](#s4-class-balanced-loss)
+  - [S5. Label Smoothing](#s5-label-smoothing)
+  - [S6. Mixup](#s6-mixup)
+  - [S7. CutMix](#s7-cutmix)
+  - [S8. Combined Best](#s8-combined-industry-best)
+- [Benchmark Results](#benchmark-results)
 - [Project Structure](#project-structure)
 - [Setup & Usage](#setup--usage)
-- [Supported Models](#supported-models)
 
 ---
 
@@ -21,239 +27,253 @@ A from-scratch PyTorch implementation of ResNet-50 trained on a **long-tail imba
 
 ### Sample Images
 
-Each row shows 5 random samples from one of the 10 CIFAR-10 classes (32x32 color images).
-
 ![Sample Images](results/figures/sample_images.png)
 
-### Imbalanced Class Distribution
+### Imbalanced Class Distribution (20:1 Ratio)
 
-The training set is **artificially imbalanced** using exponential decay to create a long-tail distribution. The most frequent class (airplane) keeps all 5,000 samples while the rarest class (truck) has only ~250 — a **20:1 imbalance ratio**.
+The training set uses **exponential decay** to create a long-tail distribution. The test set stays balanced for fair evaluation.
 
 ![Class Distribution](results/figures/class_distribution.png)
 
-| Class      | Train Samples | Ratio vs Max |
-|------------|---------------|--------------|
-| airplane   | 5,000         | 1.00x        |
-| automobile | 3,584         | 0.72x        |
-| bird       | 2,569         | 0.51x        |
-| cat        | 1,841         | 0.37x        |
-| deer       | 1,320         | 0.26x        |
-| dog        | 946           | 0.19x        |
-| frog       | 678           | 0.14x        |
-| horse      | 486           | 0.10x        |
-| ship       | 348           | 0.07x        |
-| truck      | 250           | 0.05x        |
-
-**Total training samples:** ~17,022 (down from 50,000)
-
-The **test set remains balanced** (1,000 per class) to provide a fair evaluation.
+| Class      | Train Samples | Ratio |
+|------------|---------------|-------|
+| airplane   | 5,000         | 1.00x |
+| automobile | 3,584         | 0.72x |
+| bird       | 2,569         | 0.51x |
+| cat        | 1,841         | 0.37x |
+| deer       | 1,320         | 0.26x |
+| dog        | 946           | 0.19x |
+| frog       | 678           | 0.14x |
+| horse      | 486           | 0.10x |
+| ship       | 348           | 0.07x |
+| truck      | 250           | 0.05x |
 
 ---
 
 ## Model Architecture
 
-ResNet-50 implemented **entirely from scratch** using `torch.nn` — no `torchvision.models`.
-
-### Architecture Overview
+ResNet-50 built **entirely from scratch** using `torch.nn` — no `torchvision.models`.
 
 ```
-Input (3 x 32 x 32)
-  │
-  ├── Stem: Conv2d(7x7, 64, stride=2) → BN → ReLU → MaxPool(3x3, stride=2)
-  │
-  ├── Layer 1: Bottleneck × 3  [64  → 256  channels]
-  ├── Layer 2: Bottleneck × 4  [256 → 512  channels, stride=2]
-  ├── Layer 3: Bottleneck × 6  [512 → 1024 channels, stride=2]
-  ├── Layer 4: Bottleneck × 3  [1024→ 2048 channels, stride=2]
-  │
-  ├── Head: AdaptiveAvgPool → Flatten → Dropout → Linear(2048, 10)
-  │
-  └── Output: 10 class logits
+Input (3×32×32) → Stem(7×7 conv, BN, ReLU, MaxPool)
+  → Layer1: Bottleneck×3  [64→256]
+  → Layer2: Bottleneck×4  [256→512,  stride=2]
+  → Layer3: Bottleneck×6  [512→1024, stride=2]
+  → Layer4: Bottleneck×3  [1024→2048, stride=2]
+  → Head: AdaptiveAvgPool → Flatten → Dropout → Linear(2048, 10)
 ```
-
-### Bottleneck Block Detail
-
-```
-x ──┬── Conv1x1(in→mid) → BN → ReLU
-    │   Conv3x3(mid→mid) → BN → ReLU
-    │   Conv1x1(mid→mid×4) → BN
-    │                          │
-    └── [downsample if needed] ┘ → + → ReLU → out
-```
-
-### Layer-by-Layer Summary
-
-| Layer   | Output Size | Block Structure                   | Repeat |
-|---------|-------------|-----------------------------------|--------|
-| stem    | 56 × 56     | 7×7 conv, 64, stride 2 + maxpool  | 1      |
-| layer1  | 56 × 56     | [1×1, 64 / 3×3, 64 / 1×1, 256]   | 3      |
-| layer2  | 28 × 28     | [1×1, 128 / 3×3, 128 / 1×1, 512] | 4      |
-| layer3  | 14 × 14     | [1×1, 256 / 3×3, 256 / 1×1, 1024]| 6      |
-| layer4  | 7 × 7       | [1×1, 512 / 3×3, 512 / 1×1, 2048]| 3      |
-| head    | 10          | AdaptiveAvgPool → FC              | 1      |
 
 **Total parameters: 23,528,522 (~23.5M)**
 
-### Weight Initialization
+---
 
-- **Conv2d**: Kaiming normal (fan_out, ReLU)
-- **BatchNorm2d**: weight=1, bias=0
-- **Linear**: normal(0, 0.01), bias=0
+## Imbalance Strategies
+
+Each strategy has its own config file in `configs/` and outputs results to its own directory. Every strategy is tested **independently** — only one technique is enabled at a time.
 
 ---
 
-## Configuration
+### S1. Weighted Cross-Entropy (Cost-Sensitive Learning)
 
-All hyperparameters are centralized in `configs/default.yaml`:
+**Config:** `configs/s1_weighted_ce.yaml`
 
-| Category        | Parameter           | Value                |
-|-----------------|---------------------|----------------------|
-| **Model**       | Architecture        | ResNet-50            |
-|                 | Parameters          | 23.5M               |
-|                 | Dropout             | 0.0                 |
-| **Data**        | Dataset             | CIFAR-10             |
-|                 | Image size          | 224 (resized)        |
-|                 | Train batch         | 128                  |
-|                 | Val batch           | 256                  |
-| **Imbalance**   | Enabled             | Yes                  |
-|                 | Ratio               | 20:1                 |
-|                 | Weighted loss       | Yes                  |
-|                 | Weighted sampler    | Yes                  |
-| **Optimizer**   | Type                | Adam                 |
-|                 | Learning rate       | 0.001                |
-|                 | Weight decay        | 1e-4                 |
-| **Scheduler**   | Type                | Cosine Annealing     |
-|                 | eta_min             | 1e-5                 |
-| **Training**    | Epochs              | 20                   |
-|                 | Early stopping      | 10 epochs patience   |
-| **Augmentation**| RandomCrop          | Yes                  |
-|                 | HorizontalFlip      | Yes                  |
-|                 | Normalize           | Yes                  |
-
----
-
-## Handling Imbalanced Data
-
-### The Problem
-
-When training on imbalanced data, the model becomes biased toward majority classes and ignores minority classes entirely. Without any correction, the model will:
-
-- Predict majority classes almost exclusively
-- Achieve misleadingly high overall accuracy
-- Have near-zero recall on rare classes
-
-### Solution 1: Weighted Cross-Entropy Loss
-
-Assigns higher loss penalties to under-represented classes using inverse-frequency weights:
+**Idea:** Assign inverse-frequency weights to the loss function so rare classes produce stronger gradients.
 
 $$w_c = \frac{N}{K \times n_c}$$
 
-where N = total samples, K = number of classes, n_c = samples in class c.
+**What changes:** Only `data.weighted_loss: true` and `loss.name: "ce"`
 
-```yaml
-# configs/default.yaml
-data:
-  weighted_loss: true
+```bash
+python scripts/train.py --config configs/s1_weighted_ce.yaml
 ```
 
-**Computed weights for 20:1 imbalance:**
-
-| Class      | Weight |
-|------------|--------|
-| airplane   | 0.34   |
-| automobile | 0.48   |
-| bird       | 0.66   |
-| cat        | 0.92   |
-| deer       | 1.29   |
-| dog        | 1.80   |
-| frog       | 2.51   |
-| horse      | 3.50   |
-| ship       | 4.89   |
-| truck      | 6.81   |
-
-Rare classes (truck) receive **20x more gradient signal** than common classes (airplane).
-
-### Solution 2: Weighted Random Sampler
-
-Oversamples minority classes so each batch has roughly equal class representation:
-
-```yaml
-# configs/default.yaml
-data:
-  weighted_sampling: true
-```
-
-Each sample gets a probability inversely proportional to its class frequency. The sampler draws with replacement, so rare-class samples appear more often per epoch.
-
-### When to Use Which
-
-| Strategy         | Best For                        | Trade-off                          |
-|------------------|---------------------------------|------------------------------------|
-| Weighted Loss    | Mild imbalance (2x–5x ratio)   | Simple, no data duplication        |
-| Weighted Sampler | Severe imbalance (10x+ ratio)  | Balanced batches, possible overfit |
-| Both combined    | Extreme imbalance (20x+)       | Strongest correction               |
-
-### Implementation
-
-```python
-from src.data.imbalance import (
-    make_imbalanced,
-    compute_class_weights,
-    build_weighted_sampler,
-)
-
-# 1. Create imbalanced dataset (exponential long-tail)
-imbalanced_ds = make_imbalanced(
-    dataset, imbalance_ratio=20.0,
-)
-
-# 2. Weighted loss from actual class frequencies
-weights = compute_class_weights(imbalanced_ds)
-criterion = nn.CrossEntropyLoss(weight=weights)
-
-# 3. Weighted sampler for balanced batches
-sampler = build_weighted_sampler(imbalanced_ds)
-loader = DataLoader(dataset, sampler=sampler)
-```
+**Implementation:** `src/data/imbalance.py` → `compute_class_weights()`
 
 ---
 
-## Training & Evaluation Results
+### S2. Oversampling (Weighted Random Sampler)
 
-### Training Curves
+**Config:** `configs/s2_oversampling.yaml`
 
-Loss and accuracy over epochs for both training and validation sets.
+**Idea:** Sample minority classes more frequently so every batch is roughly balanced. No data is discarded.
 
-![Training Curves](results/figures/training_curves.png)
+**What changes:** Only `data.weighted_sampling: true`
 
-### Evaluation Metrics
+```bash
+python scripts/train.py --config configs/s2_oversampling.yaml
+```
 
-| Metric       | Value  |
-|--------------|--------|
-| Accuracy     | 28.61% |
-| Macro F1     | 0.1896 |
-| Weighted F1  | 0.1896 |
+**Implementation:** `src/data/imbalance.py` → `build_weighted_sampler()`
 
-### Per-Class Performance
+---
 
-| Class      | Precision | Recall | F1-Score | Train Samples |
-|------------|-----------|--------|----------|---------------|
-| airplane   | 0.0000    | 0.0000 | 0.0000   | 5,000 (most)  |
-| automobile | 0.0000    | 0.0000 | 0.0000   | 3,584         |
-| bird       | 0.2500    | 0.0010 | 0.0020   | 2,569         |
-| cat        | 0.0000    | 0.0000 | 0.0000   | 1,841         |
-| deer       | 0.2898    | 0.0510 | 0.0867   | 1,320         |
-| dog        | 0.3340    | 0.1610 | 0.2173   | 946           |
-| frog       | 0.3154    | 0.5510 | 0.4012   | 678           |
-| horse      | 0.2539    | 0.6450 | 0.3644   | 486           |
-| ship       | 0.2983    | 0.7350 | 0.4244   | 348           |
-| truck      | 0.2772    | 0.7170 | 0.3998   | 250 (least)   |
+### S3. Focal Loss
 
-### Confusion Matrix & Per-Class Metrics
+**Config:** `configs/s3_focal.yaml`
 
-![Evaluation Results](results/figures/eval_results.png)
+**Idea:** Down-weight easy (well-classified) examples and up-weight hard ones.
 
-> **Note:** Results shown are from a 1-epoch demo run. The imbalance effects are clearly visible: despite weighted loss and sampling corrections, 1 epoch is insufficient for the model to learn all classes. Training for 20+ epochs will show the effectiveness of the imbalance strategies.
+$$FL(p_t) = -\alpha_t (1 - p_t)^\gamma \log(p_t)$$
+
+- `gamma=0` → standard CE
+- `gamma=2` → strongly penalizes confident wrong predictions
+
+**What changes:** Only `loss.name: "focal"`, `gamma: 2.0`
+
+```bash
+python scripts/train.py --config configs/s3_focal.yaml
+```
+
+**Implementation:** `src/training/losses.py` → `FocalLoss`
+
+**Reference:** [Lin et al., 2017](https://arxiv.org/abs/1708.02002)
+
+---
+
+### S4. Class-Balanced Loss
+
+**Config:** `configs/s4_cb_loss.yaml`
+
+**Idea:** Reweight classes by **effective number of samples** instead of raw count.
+
+$$E_n = \frac{1 - \beta^n}{1 - \beta}$$
+
+Each new sample has diminishing marginal value. More theoretically grounded than inverse-frequency.
+
+**What changes:** Only `loss.name: "cb"`, `beta: 0.9999`
+
+```bash
+python scripts/train.py --config configs/s4_cb_loss.yaml
+```
+
+**Implementation:** `src/training/losses.py` → `ClassBalancedLoss`
+
+**Reference:** [Cui et al., 2019](https://arxiv.org/abs/1901.05555)
+
+---
+
+### S5. Label Smoothing
+
+**Config:** `configs/s5_label_smoothing.yaml`
+
+**Idea:** Replace hard one-hot targets with soft targets to prevent overconfidence.
+
+$$y_{smooth} = (1 - \epsilon) \cdot y_{hard} + \frac{\epsilon}{K}$$
+
+Improves calibration so the model doesn't blindly predict majority classes.
+
+**What changes:** Only `loss.name: "label_smoothing"`, `smoothing: 0.1`
+
+```bash
+python scripts/train.py --config configs/s5_label_smoothing.yaml
+```
+
+**Implementation:** `src/training/losses.py` → `LabelSmoothingCE`
+
+---
+
+### S6. Mixup
+
+**Config:** `configs/s6_mixup.yaml`
+
+**Idea:** Create virtual training samples by linearly interpolating pairs of images and their labels.
+
+$$\tilde{x} = \lambda x_i + (1 - \lambda) x_j \qquad \tilde{y} = \lambda y_i + (1 - \lambda) y_j$$
+
+Acts as a regularizer that creates cross-class training signals.
+
+**What changes:** Only `training.mixup.mode: "mixup"`, `alpha: 0.4`
+
+```bash
+python scripts/train.py --config configs/s6_mixup.yaml
+```
+
+**Implementation:** `src/training/mixup.py` → `mixup()`
+
+**Reference:** [Zhang et al., 2018](https://arxiv.org/abs/1710.09412)
+
+---
+
+### S7. CutMix
+
+**Config:** `configs/s7_cutmix.yaml`
+
+**Idea:** Cut a rectangular patch from one image and paste it onto another. Labels are mixed proportional to patch area.
+
+Stronger than Mixup because the model must learn localized features from partial images.
+
+**What changes:** Only `training.mixup.mode: "cutmix"`, `alpha: 1.0`
+
+```bash
+python scripts/train.py --config configs/s7_cutmix.yaml
+```
+
+**Implementation:** `src/training/mixup.py` → `cutmix()`
+
+**Reference:** [Yun et al., 2019](https://arxiv.org/abs/1905.04899)
+
+---
+
+### S8. Combined Industry Best
+
+**Config:** `configs/s8_combined_best.yaml`
+
+**Idea:** Stack the strongest techniques from different levels:
+
+| Level          | Technique             | Purpose                               |
+|----------------|-----------------------|---------------------------------------|
+| **Data**       | Weighted Sampler      | Balanced mini-batches                 |
+| **Data**       | CutMix                | Cross-class regularization            |
+| **Data**       | Strong Augmentation   | ColorJitter + RandomErasing           |
+| **Algorithm**  | CB Focal Loss         | Effective-number + focus on hard      |
+| **Algorithm**  | Weighted loss         | Inverse-frequency gradient scaling    |
+
+**What changes:** All of the above enabled together.
+
+```bash
+python scripts/train.py --config configs/s8_combined_best.yaml
+```
+
+**Implementation:** `src/training/losses.py` → `CBFocalLoss`
+
+---
+
+## Benchmark Results
+
+All 8 strategies trained on the same imbalanced CIFAR-10 (20:1 ratio) with identical hyperparameters. Only the imbalance strategy differs.
+
+### Summary Table
+
+![Summary Table](results/figures/comparison_summary.png)
+
+| # | Strategy       | Accuracy | Macro F1 |
+|---|----------------|----------|----------|
+| 1 | Weighted CE    | 27.12%   | 0.2397   |
+| 2 | Oversampling   | **35.59%** | **0.3259** |
+| 3 | Focal Loss     | 26.34%   | 0.2015   |
+| 4 | CB Loss        | 27.88%   | 0.2379   |
+| 5 | Label Smoothing| 24.50%   | 0.1486   |
+| 6 | Mixup          | 24.40%   | 0.1413   |
+| 7 | CutMix         | 22.81%   | 0.1316   |
+| 8 | Combined Best  | 21.81%   | 0.1296   |
+
+> **Note:** Results are from 1-epoch demo runs. With 20+ epochs, the algorithm-level strategies (Focal, CB, Combined) typically surpass data-level-only approaches. Oversampling leads early because balanced batches give every class equal exposure from the first epoch.
+
+### Accuracy Comparison
+
+![Accuracy Comparison](results/figures/comparison_accuracy.png)
+
+### Macro F1 Comparison
+
+![F1 Comparison](results/figures/comparison_f1.png)
+
+### Training Curves — All Strategies
+
+![Training Curves](results/figures/comparison_training.png)
+
+### Per-Class F1 Heatmap
+
+![Per-Class F1](results/figures/comparison_per_class_f1.png)
 
 ---
 
@@ -262,37 +282,50 @@ Loss and accuracy over epochs for both training and validation sets.
 ```
 img_cls/
 ├── configs/
-│   └── default.yaml              # All hyperparameters
+│   ├── default.yaml                # Default config (CB Focal)
+│   ├── s1_weighted_ce.yaml         # Strategy 1
+│   ├── s2_oversampling.yaml        # Strategy 2
+│   ├── s3_focal.yaml               # Strategy 3
+│   ├── s4_cb_loss.yaml             # Strategy 4
+│   ├── s5_label_smoothing.yaml     # Strategy 5
+│   ├── s6_mixup.yaml               # Strategy 6
+│   ├── s7_cutmix.yaml              # Strategy 7
+│   └── s8_combined_best.yaml       # Strategy 8
 ├── scripts/
-│   ├── train.py                  # Training pipeline
-│   ├── evaluate.py               # Test set evaluation
-│   ├── predict.py                # Single-image inference
-│   └── visualize.py              # Generate all figures
+│   ├── train.py                    # Training pipeline
+│   ├── evaluate.py                 # Test set evaluation
+│   ├── predict.py                  # Single-image inference
+│   ├── visualize.py                # Dataset & single-run figures
+│   ├── run_all.py                  # Run all 8 experiments
+│   └── compare.py                  # Cross-strategy comparison
 ├── src/
 │   ├── data/
-│   │   ├── dataset.py            # CIFAR-10/100 loader + imbalance
-│   │   ├── transforms.py         # Augmentation pipeline
-│   │   ├── dataloader.py         # DataLoader + weighted sampler
-│   │   └── imbalance.py          # Long-tail, weighted loss/sampler
+│   │   ├── dataset.py              # CIFAR-10 + imbalance injection
+│   │   ├── transforms.py           # Augmentation pipeline
+│   │   ├── dataloader.py           # DataLoader + weighted sampler
+│   │   └── imbalance.py            # Long-tail, class weights, sampler
 │   ├── models/
-│   │   ├── resnet.py             # ResNet from scratch
-│   │   ├── simple_cnn.py         # Baseline CNN
-│   │   └── factory.py            # Model builder
+│   │   ├── resnet.py               # ResNet from scratch
+│   │   ├── simple_cnn.py           # Baseline CNN
+│   │   └── factory.py              # Model builder
 │   ├── training/
-│   │   ├── trainer.py            # Training loop + early stopping
-│   │   ├── optimizer.py          # Optimizer builder
-│   │   └── scheduler.py          # LR scheduler builder
+│   │   ├── trainer.py              # Training loop + mixup + early stop
+│   │   ├── losses.py               # Focal, CB, LabelSmoothing, CBFocal
+│   │   ├── mixup.py                # Mixup + CutMix
+│   │   ├── optimizer.py            # Optimizer builder
+│   │   └── scheduler.py            # LR scheduler builder
 │   ├── evaluation/
-│   │   └── metrics.py            # Accuracy, F1, confusion matrix
+│   │   └── metrics.py              # Accuracy, F1, confusion matrix
 │   └── utils/
-│       ├── config.py             # YAML config loader
-│       ├── logger.py             # Logging setup
-│       └── helpers.py            # Seed, device, checkpointing
+│       ├── config.py               # YAML config loader
+│       ├── logger.py               # Logging setup
+│       └── helpers.py              # Seed, device, checkpointing
 ├── results/
-│   ├── checkpoints/              # Model weights (.pth)
-│   ├── figures/                  # Generated visualizations
-│   ├── train_history.json        # Per-epoch metrics
-│   └── eval_results.json         # Final evaluation
+│   ├── s1_weighted_ce/             # Strategy 1 outputs
+│   ├── s2_oversampling/            # Strategy 2 outputs
+│   ├── ...                         # Strategies 3-7
+│   ├── s8_combined_best/           # Strategy 8 outputs
+│   └── figures/                    # All visualizations
 ├── tests/
 │   └── test_model.py
 ├── requirements.txt
@@ -311,43 +344,37 @@ conda activate img_cls
 pip install -r requirements.txt
 ```
 
-### Train
+### Run a Single Strategy
 
 ```bash
-python scripts/train.py --config configs/default.yaml
+python scripts/train.py --config configs/s3_focal.yaml
+python scripts/evaluate.py --config configs/s3_focal.yaml \
+    --checkpoint results/s3_focal/checkpoints/best.pth
 ```
 
-Override any parameter:
+### Run All 8 Strategies
 
 ```bash
-python scripts/train.py --config configs/default.yaml \
-    --override training.epochs=50 \
-               data.imbalance.ratio=50 \
-               data.weighted_loss=True \
-               data.weighted_sampling=True
+python scripts/run_all.py --epochs 20
 ```
 
-### Evaluate
+### Generate Comparison Charts
 
 ```bash
-python scripts/evaluate.py \
-    --config configs/default.yaml \
-    --checkpoint results/checkpoints/best.pth
+python scripts/compare.py
 ```
 
-### Predict
-
-```bash
-python scripts/predict.py \
-    --config configs/default.yaml \
-    --checkpoint results/checkpoints/best.pth \
-    --input path/to/image.jpg
-```
-
-### Generate Visualizations
+### Generate Dataset Visualizations
 
 ```bash
 python scripts/visualize.py
+```
+
+### Override Any Parameter
+
+```bash
+python scripts/train.py --config configs/s3_focal.yaml \
+    --override training.epochs=50 loss.gamma=3.0
 ```
 
 ---
@@ -361,6 +388,16 @@ python scripts/visualize.py
 | ResNet-34   | `resnet34`    | ~21M       | BasicBlock |
 | ResNet-50   | `resnet50`    | ~23.5M     | Bottleneck |
 | ResNet-101  | `resnet101`   | ~42.5M     | Bottleneck |
+
+---
+
+## References
+
+1. He et al., 2016 — [Deep Residual Learning](https://arxiv.org/abs/1512.03385)
+2. Lin et al., 2017 — [Focal Loss for Dense Object Detection](https://arxiv.org/abs/1708.02002)
+3. Cui et al., 2019 — [Class-Balanced Loss](https://arxiv.org/abs/1901.05555)
+4. Zhang et al., 2018 — [Mixup](https://arxiv.org/abs/1710.09412)
+5. Yun et al., 2019 — [CutMix](https://arxiv.org/abs/1905.04899)
 
 ---
 

@@ -12,6 +12,9 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 from src.evaluation.metrics import accuracy
+from src.training.mixup import (
+    mixup, cutmix, mixup_criterion, MixupOutput,
+)
 from src.utils.helpers import save_checkpoint
 from src.utils.logger import get_logger
 
@@ -111,6 +114,10 @@ class Trainer:
             "gradient_clip", 0.0,
         )
 
+        mix_cfg = train_cfg.get("mixup", {})
+        self.mixup_mode = mix_cfg.get("mode", "none")
+        self.mixup_alpha = mix_cfg.get("alpha", 0.4)
+
         es_cfg = train_cfg.get("early_stopping", {})
         self.early_stop = EarlyStopTracker(
             enabled=es_cfg.get("enabled", False),
@@ -179,6 +186,21 @@ class Trainer:
         self._save_history(history)
         return history
 
+    def _apply_mixup(
+        self,
+        images: torch.Tensor,
+        labels: torch.Tensor,
+    ) -> MixupOutput | None:
+        if self.mixup_mode == "mixup":
+            return mixup(
+                images, labels, self.mixup_alpha,
+            )
+        if self.mixup_mode == "cutmix":
+            return cutmix(
+                images, labels, self.mixup_alpha,
+            )
+        return None
+
     def _train_one_epoch(
         self, loader: DataLoader, epoch: int,
     ) -> tuple[float, float]:
@@ -190,8 +212,17 @@ class Trainer:
             labels = labels.to(self.device)
 
             self.optimizer.zero_grad()
-            logits = self.model(images)
-            loss = self.criterion(logits, labels)
+
+            mix_out = self._apply_mixup(images, labels)
+            if mix_out is not None:
+                logits = self.model(mix_out.images)
+                loss = mixup_criterion(
+                    self.criterion, logits, mix_out,
+                )
+            else:
+                logits = self.model(images)
+                loss = self.criterion(logits, labels)
+
             loss.backward()
 
             if self.grad_clip > 0:
