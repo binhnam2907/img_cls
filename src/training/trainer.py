@@ -13,7 +13,10 @@ from torch.utils.data import DataLoader
 
 from src.evaluation.metrics import accuracy
 from src.training.mixup import (
-    mixup, cutmix, mixup_criterion, MixupOutput,
+    mixup,
+    cutmix,
+    mixup_criterion,
+    MixupOutput,
 )
 from src.utils.helpers import save_checkpoint
 from src.utils.logger import get_logger
@@ -26,23 +29,18 @@ class EarlyStopTracker:
     mode: str = "max"
     best_metric: float = field(init=False)
     epochs_no_improve: int = field(
-        init=False, default=0,
+        init=False,
+        default=0,
     )
 
     def __post_init__(self):
         self.best_metric = (
-            -float("inf")
-            if self.mode == "max"
-            else float("inf")
+            -float("inf") if self.mode == "max" else float("inf")
         )
 
     def step(self, metric: float) -> bool:
-        improved = (
-            self.mode == "max"
-            and metric > self.best_metric
-        ) or (
-            self.mode == "min"
-            and metric < self.best_metric
+        improved = (self.mode == "max" and metric > self.best_metric) or (
+            self.mode == "min" and metric < self.best_metric
         )
         if improved:
             self.best_metric = metric
@@ -53,10 +51,7 @@ class EarlyStopTracker:
 
     @property
     def should_stop(self) -> bool:
-        return (
-            self.enabled
-            and self.epochs_no_improve >= self.patience
-        )
+        return self.enabled and self.epochs_no_improve >= self.patience
 
 
 @dataclass
@@ -111,7 +106,8 @@ class Trainer:
 
         train_cfg = cfg["training"]
         self.grad_clip = train_cfg.get(
-            "gradient_clip", 0.0,
+            "gradient_clip",
+            0.0,
         )
 
         mix_cfg = train_cfg.get("mixup", {})
@@ -135,9 +131,7 @@ class Trainer:
         val_loader: DataLoader | None = None,
         epochs: int | None = None,
     ) -> dict[str, list[float]]:
-        num_epochs = (
-            epochs or self.cfg["training"]["epochs"]
-        )
+        num_epochs = epochs or self.cfg["training"]["epochs"]
         history = _empty_history()
         wall_start = time.time()
         last_epoch = 0
@@ -146,9 +140,7 @@ class Trainer:
             last_epoch = epoch
             epoch_start = time.time()
 
-            train_loss, train_acc = (
-                self._train_one_epoch(train_loader, epoch)
-            )
+            train_loss, train_acc = self._train_one_epoch(train_loader, epoch)
             history["train_loss"].append(train_loss)
             history["train_acc"].append(train_acc)
 
@@ -156,32 +148,37 @@ class Trainer:
             history["lr"].append(lr)
 
             val_loss, val_acc = self._maybe_validate(
-                val_loader, history,
+                val_loader,
+                history,
             )
             self._step_scheduler(val_acc)
 
             if val_acc is not None:
                 if self._handle_early_stop(
-                    epoch, val_acc,
+                    epoch,
+                    val_acc,
                 ):
                     break
 
             elapsed = time.time() - epoch_start
             self._log_epoch(
-                epoch, num_epochs,
-                train_loss, train_acc,
-                val_loss, val_acc,
-                lr, elapsed,
+                epoch,
+                num_epochs,
+                train_loss,
+                train_acc,
+                val_loss,
+                val_acc,
+                lr,
+                elapsed,
             )
 
             if epoch % self.save_interval == 0:
                 self._save_ckpt(
-                    epoch, tag=f"epoch_{epoch}",
+                    epoch,
+                    tag=f"epoch_{epoch}",
                 )
 
-        history["total_time_sec"] = (
-            time.time() - wall_start
-        )
+        history["total_time_sec"] = time.time() - wall_start
         self._save_ckpt(last_epoch, tag="last")
         self._save_history(history)
         return history
@@ -193,16 +190,22 @@ class Trainer:
     ) -> MixupOutput | None:
         if self.mixup_mode == "mixup":
             return mixup(
-                images, labels, self.mixup_alpha,
+                images,
+                labels,
+                self.mixup_alpha,
             )
         if self.mixup_mode == "cutmix":
             return cutmix(
-                images, labels, self.mixup_alpha,
+                images,
+                labels,
+                self.mixup_alpha,
             )
         return None
 
     def _train_one_epoch(
-        self, loader: DataLoader, epoch: int,
+        self,
+        loader: DataLoader,
+        epoch: int,
     ) -> tuple[float, float]:
         self.model.train()
         stats = EpochStats()
@@ -217,7 +220,9 @@ class Trainer:
             if mix_out is not None:
                 logits = self.model(mix_out.images)
                 loss = mixup_criterion(
-                    self.criterion, logits, mix_out,
+                    self.criterion,
+                    logits,
+                    mix_out,
                 )
             else:
                 logits = self.model(images)
@@ -234,10 +239,14 @@ class Trainer:
             self.optimizer.step()
 
             batch_acc = accuracy(
-                logits, labels, topk=(1,),
+                logits,
+                labels,
+                topk=(1,),
             )[0]
             stats.update(
-                loss.item(), batch_acc, images.size(0),
+                loss.item(),
+                batch_acc,
+                images.size(0),
             )
 
             if i % self.log_interval == 0:
@@ -251,7 +260,8 @@ class Trainer:
 
     @torch.no_grad()
     def _validate(
-        self, loader: DataLoader,
+        self,
+        loader: DataLoader,
     ) -> tuple[float, float]:
         self.model.eval()
         stats = EpochStats()
@@ -263,10 +273,14 @@ class Trainer:
             loss = self.criterion(logits, labels)
 
             batch_acc = accuracy(
-                logits, labels, topk=(1,),
+                logits,
+                labels,
+                topk=(1,),
             )[0]
             stats.update(
-                loss.item(), batch_acc, images.size(0),
+                loss.item(),
+                batch_acc,
+                images.size(0),
             )
 
         return stats.avg_loss, stats.avg_acc
@@ -284,12 +298,14 @@ class Trainer:
         return val_loss, val_acc
 
     def _step_scheduler(
-        self, val_acc: float | None,
+        self,
+        val_acc: float | None,
     ) -> None:
         if self.scheduler is None:
             return
         if isinstance(
-            self.scheduler, ReduceLROnPlateau,
+            self.scheduler,
+            ReduceLROnPlateau,
         ):
             if val_acc is not None:
                 self.scheduler.step(val_acc)
@@ -297,58 +313,53 @@ class Trainer:
             self.scheduler.step()
 
     def _handle_early_stop(
-        self, epoch: int, val_metric: float,
+        self,
+        epoch: int,
+        val_metric: float,
     ) -> bool:
         improved = self.early_stop.step(val_metric)
         if improved:
             self._save_ckpt(epoch, tag="best")
         if self.early_stop.should_stop:
-            self.logger.info(
-                f"Early stopping at epoch {epoch}"
-            )
+            self.logger.info(f"Early stopping at epoch {epoch}")
             return True
         return False
 
     def _log_epoch(
         self,
-        epoch: int, total: int,
-        train_loss: float, train_acc: float,
+        epoch: int,
+        total: int,
+        train_loss: float,
+        train_acc: float,
         val_loss: float | None,
         val_acc: float | None,
-        lr: float, elapsed: float,
+        lr: float,
+        elapsed: float,
     ) -> None:
         parts = [f"Epoch {epoch}/{total}"]
         parts.append(
-            f"train_loss={train_loss:.4f} "
-            f"train_acc={train_acc:.2f}%"
+            f"train_loss={train_loss:.4f} " f"train_acc={train_acc:.2f}%"
         )
         if val_loss is not None:
-            parts.append(
-                f"val_loss={val_loss:.4f} "
-                f"val_acc={val_acc:.2f}%"
-            )
+            parts.append(f"val_loss={val_loss:.4f} " f"val_acc={val_acc:.2f}%")
         parts.append(f"lr={lr:.6f}")
         parts.append(f"{elapsed:.1f}s")
         self.logger.info(" | ".join(parts))
 
     def _save_ckpt(
-        self, epoch: int, tag: str = "latest",
+        self,
+        epoch: int,
+        tag: str = "latest",
     ) -> None:
         state = {
             "epoch": epoch,
-            "model_state_dict": (
-                self.model.state_dict()
-            ),
-            "optimizer_state_dict": (
-                self.optimizer.state_dict()
-            ),
+            "model_state_dict": (self.model.state_dict()),
+            "optimizer_state_dict": (self.optimizer.state_dict()),
             "best_metric": self.early_stop.best_metric,
             "config": self.cfg,
         }
         if self.scheduler is not None:
-            state["scheduler_state_dict"] = (
-                self.scheduler.state_dict()
-            )
+            state["scheduler_state_dict"] = self.scheduler.state_dict()
         save_checkpoint(
             state,
             self.output_dir / "checkpoints",
@@ -359,12 +370,7 @@ class Trainer:
         path = self.output_dir / "train_history.json"
         serializable = {
             k: (
-                [
-                    round(x, 6)
-                    if isinstance(x, float)
-                    else x
-                    for x in v
-                ]
+                [round(x, 6) if isinstance(x, float) else x for x in v]
                 if isinstance(v, list)
                 else v
             )
@@ -372,14 +378,14 @@ class Trainer:
         }
         with open(path, "w") as f:
             json.dump(serializable, f, indent=2)
-        self.logger.info(
-            f"Training history saved to {path}"
-        )
+        self.logger.info(f"Training history saved to {path}")
 
 
 def _empty_history() -> dict[str, list]:
     return {
-        "train_loss": [], "train_acc": [],
-        "val_loss": [], "val_acc": [],
+        "train_loss": [],
+        "train_acc": [],
+        "val_loss": [],
+        "val_acc": [],
         "lr": [],
     }
