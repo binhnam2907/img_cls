@@ -6,3 +6,7 @@ from src.data.imbalance import (  # noqa: F401
     compute_class_weights,
     build_weighted_sampler,
 )
+from src.data.smote import (  # noqa: F401
+    apply_smote,
+    apply_adasyn,
+)

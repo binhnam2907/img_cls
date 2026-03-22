@@ -1,10 +1,12 @@
 """Loss functions for imbalanced classification.
 
 Independent strategies:
-  1. FocalLoss         - down-weights easy examples
-  2. ClassBalancedLoss - effective-number reweighting
-  3. LabelSmoothingCE  - soft targets for calibration
-  4. CBFocalLoss       - CB + Focal combined (industry)
+  1. FocalLoss          - down-weights easy examples
+  2. ClassBalancedLoss  - effective-number reweighting
+  3. LabelSmoothingCE   - soft targets for calibration
+  4. CBFocalLoss        - CB + Focal combined
+  5. BalancedSoftmax    - log-prior logit adjustment
+  6. LogitAdjustment    - parameterised logit shift
 """
 from __future__ import annotations
 
@@ -201,6 +203,73 @@ class CBFocalLoss(nn.Module):
         )
 
 
+class BalancedSoftmaxLoss(nn.Module):
+    """Balanced Softmax (Ren et al., 2020).
+
+    Adjusts logits by adding log(class_prior) before
+    softmax so the decision boundary accounts for the
+    training label distribution.
+
+    Ref: Gao et al. 2025, Section 5.2.1.
+    """
+
+    def __init__(
+        self,
+        samples_per_class: list[int],
+    ):
+        super().__init__()
+        freq = torch.tensor(
+            samples_per_class, dtype=torch.float,
+        )
+        self.register_buffer(
+            "_log_prior",
+            freq.log() - freq.sum().log(),
+        )
+
+    def forward(
+        self, logits: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        adjusted = logits + self._log_prior.to(
+            logits.device,
+        )
+        return F.cross_entropy(adjusted, targets)
+
+
+class LogitAdjustmentLoss(nn.Module):
+    """Logit Adjustment (Menon et al., 2021).
+
+    Shifts logits by tau * log(class_prior) to
+    encourage balanced posterior predictions.
+
+    Ref: Gao et al. 2025, Section 5.2.2.
+    """
+
+    def __init__(
+        self,
+        samples_per_class: list[int],
+        tau: float = 1.0,
+    ):
+        super().__init__()
+        self.tau = tau
+        freq = torch.tensor(
+            samples_per_class, dtype=torch.float,
+        )
+        self.register_buffer(
+            "_log_prior",
+            freq.log() - freq.sum().log(),
+        )
+
+    def forward(
+        self, logits: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        adjusted = logits + self.tau * self._log_prior.to(
+            logits.device,
+        )
+        return F.cross_entropy(adjusted, targets)
+
+
 def _focal_forward(
     logits: torch.Tensor,
     targets: torch.Tensor,
@@ -283,9 +352,31 @@ def build_loss(
                 gamma=loss_cfg.get("gamma", 2.0),
             ).to(device)
 
+        case "balanced_softmax":
+            if samples_per_class is None:
+                raise ValueError(
+                    "BalancedSoftmax needs "
+                    "samples_per_class"
+                )
+            return BalancedSoftmaxLoss(
+                samples_per_class,
+            ).to(device)
+
+        case "logit_adjust":
+            if samples_per_class is None:
+                raise ValueError(
+                    "LogitAdjustment needs "
+                    "samples_per_class"
+                )
+            return LogitAdjustmentLoss(
+                samples_per_class,
+                tau=loss_cfg.get("tau", 1.0),
+            ).to(device)
+
         case _:
             raise ValueError(
                 f"Unknown loss '{name}'. Choose from: "
                 "ce, focal, cb, label_smoothing, "
-                "cb_focal"
+                "cb_focal, balanced_softmax, "
+                "logit_adjust"
             )

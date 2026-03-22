@@ -29,6 +29,12 @@ data:
     enabled: true
     ratio: 20    # max_class / min_class
 
+  # Synthetic oversampling (preprocessing)
+  oversampling:
+    method: "none"         # none, smote, adasyn
+    target_ratio: 1.0      # desired minority/majority
+    k_neighbors: 5         # k for nearest-neighbor
+
   # Imbalanced data strategies (data-level)
   weighted_sampling: true   # WeightedRandomSampler
   weighted_loss: true       # inverse-freq class weights

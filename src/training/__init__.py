@@ -6,11 +6,14 @@ from src.training.losses import (  # noqa: F401
     ClassBalancedLoss,
     LabelSmoothingCE,
     CBFocalLoss,
+    BalancedSoftmaxLoss,
+    LogitAdjustmentLoss,
     build_loss,
 )
 from src.training.mixup import (  # noqa: F401
     mixup,
     cutmix,
+    remix,
     mixup_criterion,
     MixupOutput,
 )

@@ -1,4 +1,4 @@
-"""Compare results across all 8 imbalance strategies.
+"""Compare results across all imbalance strategies.
 
 Usage:
     python scripts/compare.py
@@ -25,6 +25,10 @@ STRATEGIES = [
     ("s6_mixup", "Mixup"),
     ("s7_cutmix", "CutMix"),
     ("s8_combined_best", "Combined"),
+    ("s9_remix", "Remix"),
+    ("s10_balanced_softmax", "Bal.Softmax"),
+    ("s11_logit_adjust", "Logit Adj."),
+    ("s12_decoupled_crt", "cRT"),
 ]
 
 CIFAR10_CLASSES = [
@@ -36,6 +40,7 @@ FIGURE_DIR = Path("results/figures")
 COLORS = [
     "#4C72B0", "#DD8452", "#55A868", "#C44E52",
     "#8172B3", "#937860", "#DA8BC3", "#8C8C8C",
+    "#CCB974", "#64B5CD", "#E377C2", "#7F7F7F",
 ]
 
 

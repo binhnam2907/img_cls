@@ -39,7 +39,7 @@ model:
   dropout: 0.0
 
 loss:
-  name: "cb_focal"
+  name: "balanced_softmax"
   gamma: 2.0
   beta: 0.9999
   smoothing: 0.1
@@ -47,9 +47,16 @@ loss:
 training:
   epochs: 20
   gradient_clip: 0.0
+  crt:
+    enabled: true
+    classifier_epochs: 5
+    lr: 0.01
   mixup:
-    mode: "cutmix"
+    mode: "remix"
     alpha: 1.0
+    remix:
+      tau: 0.5
+      kappa: 0.9
   optimizer:
     name: "adam"
     lr: 0.001

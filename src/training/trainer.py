@@ -15,6 +15,7 @@ from src.evaluation.metrics import accuracy
 from src.training.mixup import (
     mixup,
     cutmix,
+    remix,
     mixup_criterion,
     MixupOutput,
 )
@@ -114,6 +115,19 @@ class Trainer:
         self.mixup_mode = mix_cfg.get("mode", "none")
         self.mixup_alpha = mix_cfg.get("alpha", 0.4)
 
+        remix_cfg = mix_cfg.get("remix", {})
+        self.remix_tau = remix_cfg.get("tau", 0.5)
+        self.remix_kappa = remix_cfg.get("kappa", 0.9)
+
+        self.class_counts: torch.Tensor | None = None
+
+        self.crt_enabled = train_cfg.get(
+            "crt", {},
+        ).get("enabled", False)
+        self.crt_classifier_epochs = train_cfg.get(
+            "crt", {},
+        ).get("classifier_epochs", 5)
+
         es_cfg = train_cfg.get("early_stopping", {})
         self.early_stop = EarlyStopTracker(
             enabled=es_cfg.get("enabled", False),
@@ -124,6 +138,15 @@ class Trainer:
     @property
     def best_metric(self) -> float:
         return self.early_stop.best_metric
+
+    def set_class_counts(
+        self,
+        counts: list[int],
+    ) -> None:
+        """Store per-class counts for Remix."""
+        self.class_counts = torch.tensor(
+            counts, dtype=torch.long,
+        )
 
     def fit(
         self,
@@ -178,10 +201,81 @@ class Trainer:
                     tag=f"epoch_{epoch}",
                 )
 
+        if self.crt_enabled:
+            self._crt_phase(
+                train_loader,
+                val_loader,
+                last_epoch,
+                history,
+            )
+
         history["total_time_sec"] = time.time() - wall_start
         self._save_ckpt(last_epoch, tag="last")
         self._save_history(history)
         return history
+
+    def _crt_phase(
+        self,
+        train_loader: DataLoader,
+        val_loader: DataLoader | None,
+        last_epoch: int,
+        history: dict,
+    ) -> None:
+        """Decoupled cRT: freeze backbone, retrain head
+        with a class-balanced sampler/loss.
+        (Kang et al., 2020; Gao et al. 2025 Sec. 5.1)
+        """
+        self.logger.info(
+            "=== cRT phase: freezing backbone, "
+            "retraining classifier ==="
+        )
+        for name, param in self.model.named_parameters():
+            if "head" not in name and "fc" not in name:
+                param.requires_grad = False
+
+        head_params = [
+            p for p in self.model.parameters()
+            if p.requires_grad
+        ]
+        crt_lr = self.cfg["training"].get(
+            "crt", {},
+        ).get("lr", 0.01)
+        crt_opt = torch.optim.SGD(
+            head_params, lr=crt_lr, momentum=0.9,
+        )
+        self.optimizer = crt_opt
+
+        crt_epochs = self.crt_classifier_epochs
+        for ep in range(1, crt_epochs + 1):
+            t_loss, t_acc = self._train_one_epoch(
+                train_loader,
+                last_epoch + ep,
+            )
+            history["train_loss"].append(t_loss)
+            history["train_acc"].append(t_acc)
+            history["lr"].append(crt_lr)
+
+            if val_loader is not None:
+                v_loss, v_acc = self._validate(
+                    val_loader,
+                )
+                history["val_loss"].append(v_loss)
+                history["val_acc"].append(v_acc)
+            else:
+                v_loss, v_acc = None, None
+
+            self.logger.info(
+                f"cRT {ep}/{crt_epochs}"
+                f" loss={t_loss:.4f}"
+                f" acc={t_acc:.2f}%"
+                + (
+                    f" val_acc={v_acc:.2f}%"
+                    if v_acc is not None else ""
+                )
+            )
+
+        for param in self.model.parameters():
+            param.requires_grad = True
 
     def _apply_mixup(
         self,
@@ -199,6 +293,15 @@ class Trainer:
                 images,
                 labels,
                 self.mixup_alpha,
+            )
+        if self.mixup_mode == "remix":
+            return remix(
+                images,
+                labels,
+                alpha=self.mixup_alpha,
+                tau=self.remix_tau,
+                kappa=self.remix_kappa,
+                class_counts=self.class_counts,
             )
         return None
 

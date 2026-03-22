@@ -131,6 +131,7 @@ def main():
         model, optimizer, scheduler,
         criterion, device, cfg,
     )
+    trainer.set_class_counts(samples_per_class)
     trainer.fit(loaders["train"], loaders.get("val"))
 
     logger.info("Training complete.")

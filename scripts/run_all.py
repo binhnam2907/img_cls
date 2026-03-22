@@ -1,4 +1,4 @@
-"""Run all 8 imbalance strategy experiments.
+"""Run all 12 imbalance strategy experiments.
 
 Usage:
     python scripts/run_all.py
@@ -21,6 +21,10 @@ CONFIGS = [
     "configs/s6_mixup.yaml",
     "configs/s7_cutmix.yaml",
     "configs/s8_combined_best.yaml",
+    "configs/s9_remix.yaml",
+    "configs/s10_balanced_softmax.yaml",
+    "configs/s11_logit_adjust.yaml",
+    "configs/s12_decoupled_crt.yaml",
 ]
 
 STRATEGY_NAMES = [
@@ -32,6 +36,10 @@ STRATEGY_NAMES = [
     "Mixup",
     "CutMix",
     "Combined Best",
+    "Remix",
+    "Balanced Softmax",
+    "Logit Adjustment",
+    "Decoupled cRT",
 ]
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -67,9 +75,10 @@ def main():
     for i, (cfg_path, name) in enumerate(
         zip(CONFIGS, STRATEGY_NAMES), 1,
     ):
+        n = len(CONFIGS)
         print(
             f"\n{'='*50}\n"
-            f"[{i}/8] {name} ({cfg_path})\n"
+            f"[{i}/{n}] {name} ({cfg_path})\n"
             f"{'='*50}"
         )
         start = time.time()

@@ -1,12 +1,9 @@
-"""Mixup and CutMix data augmentation for imbalance.
-
-Both create virtual training samples by interpolating
-between pairs, which acts as a strong regularizer and
-helps the model generalize across imbalanced classes.
+"""Mixup, CutMix, and Remix data augmentation.
 
 References:
   - Mixup: Zhang et al., 2018
   - CutMix: Yun et al., 2019
+  - Remix: Chou et al., 2020 (Sec. 2.1.1, Ref [13])
 """
 from __future__ import annotations
 
@@ -22,6 +19,7 @@ class MixupOutput:
     targets_a: torch.Tensor
     targets_b: torch.Tensor
     lam: float
+    lam_label: float | None = None
 
 
 def mixup(
@@ -84,17 +82,64 @@ def cutmix(
     )
 
 
+def remix(
+    images: torch.Tensor,
+    targets: torch.Tensor,
+    alpha: float = 1.0,
+    tau: float = 0.5,
+    kappa: float = 0.9,
+    class_counts: torch.Tensor | None = None,
+) -> MixupOutput:
+    """Remix: Mixup with separate label lambda biased
+    toward minority (Chou et al., 2020).
+
+    The feature lambda comes from Beta(alpha, alpha) as
+    usual.  The label lambda is adjusted so the minority
+    sample in each pair receives at least ``kappa``
+    weight when the feature lambda falls below ``tau``.
+    """
+    lam_f = (
+        np.random.beta(alpha, alpha)
+        if alpha > 0 else 1.0
+    )
+    bs = images.size(0)
+    idx = torch.randperm(bs, device=images.device)
+    mixed = lam_f * images + (1 - lam_f) * images[idx]
+
+    lam_l = lam_f
+    if class_counts is not None and lam_f < tau:
+        cc = class_counts.to(targets.device)
+        n_a = cc[targets].float()
+        n_b = cc[targets[idx]].float()
+        minority_is_a = (n_a <= n_b).float().mean()
+        if minority_is_a > 0.5:
+            lam_l = max(lam_f, kappa)
+        else:
+            lam_l = min(lam_f, 1.0 - kappa)
+
+    return MixupOutput(
+        images=mixed,
+        targets_a=targets,
+        targets_b=targets[idx],
+        lam=lam_f,
+        lam_label=lam_l,
+    )
+
+
 def mixup_criterion(
     criterion: torch.nn.Module,
     logits: torch.Tensor,
     mix_out: MixupOutput,
 ) -> torch.Tensor:
     """Compute mixed loss from MixupOutput."""
+    lam = (
+        mix_out.lam_label
+        if mix_out.lam_label is not None
+        else mix_out.lam
+    )
     return (
-        mix_out.lam * criterion(
-            logits, mix_out.targets_a,
-        )
-        + (1 - mix_out.lam) * criterion(
+        lam * criterion(logits, mix_out.targets_a)
+        + (1 - lam) * criterion(
             logits, mix_out.targets_b,
         )
     )

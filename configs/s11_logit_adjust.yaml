@@ -1,0 +1,79 @@
+project:
+  name: "s11_logit_adjust"
+  seed: 42
+  device: "auto"
+  output_dir: "results/s11_logit_adjust"
+
+data:
+  dataset: "cifar10"
+  data_dir: "data"
+  num_workers: 4
+  pin_memory: true
+  custom:
+    num_classes: 10
+    image_size: 224
+  train:
+    batch_size: 128
+    shuffle: true
+    drop_last: true
+  val:
+    batch_size: 256
+    shuffle: false
+    drop_last: false
+  imbalance:
+    enabled: true
+    ratio: 20
+  weighted_sampling: false
+  weighted_loss: false
+  augmentation:
+    random_crop: true
+    random_horizontal_flip: true
+    color_jitter: false
+    random_erasing: false
+    normalize: true
+
+model:
+  name: "resnet50"
+  pretrained: false
+  num_classes: 10
+  dropout: 0.0
+
+loss:
+  name: "logit_adjust"
+  tau: 1.0
+  gamma: 2.0
+  beta: 0.9999
+  smoothing: 0.1
+
+training:
+  epochs: 20
+  gradient_clip: 0.0
+  mixup:
+    mode: "none"
+    alpha: 0.4
+  optimizer:
+    name: "adam"
+    lr: 0.001
+    weight_decay: 0.0001
+    momentum: 0.9
+    nesterov: true
+  scheduler:
+    name: "cosine"
+    step_size: 30
+    gamma: 0.1
+    T_max: 20
+    eta_min: 0.00001
+    patience: 10
+    factor: 0.1
+  early_stopping:
+    enabled: true
+    patience: 10
+    metric: "val_acc"
+    mode: "max"
+
+logging:
+  log_interval: 50
+  save_interval: 5
+  tensorboard: false
+  wandb: false
+  wandb_project: "image_classification"

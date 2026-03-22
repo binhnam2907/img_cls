@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 from torchvision import datasets
 
 from src.data.imbalance import make_imbalanced
+from src.data.smote import apply_smote, apply_adasyn
 from src.data.transforms import build_transforms
 
 _CIFAR_CLASSES = {
@@ -68,6 +69,45 @@ def _maybe_apply_imbalance(
     )
 
 
+def _maybe_apply_oversampling(
+    dataset: Dataset, cfg: dict[str, Any],
+    is_train: bool,
+) -> Dataset:
+    """Apply SMOTE or ADASYN oversampling when
+    configured."""
+    if not is_train:
+        return dataset
+
+    os_cfg = cfg["data"].get("oversampling", {})
+    method = os_cfg.get("method", "none")
+    if method == "none":
+        return dataset
+
+    seed = cfg["project"].get("seed", 42)
+    ratio = os_cfg.get("target_ratio", 1.0)
+    k = os_cfg.get("k_neighbors", 5)
+
+    if method == "smote":
+        return apply_smote(
+            dataset,
+            target_ratio=ratio,
+            k_neighbors=k,
+            seed=seed,
+        )
+    if method == "adasyn":
+        return apply_adasyn(
+            dataset,
+            target_ratio=ratio,
+            k_neighbors=k,
+            seed=seed,
+        )
+
+    raise ValueError(
+        f"Unknown oversampling '{method}'. "
+        "Choose: none, smote, adasyn"
+    )
+
+
 def build_dataset(
     cfg: dict[str, Any], split: str = "train",
 ) -> Dataset:
@@ -93,6 +133,6 @@ def build_dataset(
             f"Choose from: {SUPPORTED_DATASETS}"
         )
 
-    return _maybe_apply_imbalance(
-        ds, cfg, is_train,
-    )
+    ds = _maybe_apply_imbalance(ds, cfg, is_train)
+    ds = _maybe_apply_oversampling(ds, cfg, is_train)
+    return ds
