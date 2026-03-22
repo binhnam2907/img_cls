@@ -9,6 +9,7 @@ A from-scratch PyTorch implementation of ResNet-50 trained on a **long-tail imba
 - [Why Class Imbalance Matters](#why-class-imbalance-matters)
 - [Dataset](#dataset)
 - [Model Architecture](#model-architecture)
+- [Formal Problem Statement](#formal-problem-statement)
 - [How We Handle Imbalance — 5 Categories of Solutions](#how-we-handle-imbalance--5-categories-of-solutions)
   - [Category 1: Data Re-balancing](#category-1-data-re-balancing--fix-the-data)
   - [Category 2: Cost-Sensitive Learning](#category-2-cost-sensitive-learning--fix-the-loss)
@@ -67,18 +68,26 @@ We start with CIFAR-10 (50,000 balanced training images) and apply **exponential
 
 ![Class Distribution](results/figures/class_distribution.png)
 
-| Class      | Train Samples | Ratio | What happens without imbalance handling |
-|------------|---------------|-------|-----------------------------------------|
-| airplane   | 5,000         | 1.00x | Model learns this class very well |
-| automobile | 3,584         | 0.72x | Slight degradation |
-| bird       | 2,569         | 0.51x | Noticeable accuracy drop |
-| cat        | 1,841         | 0.37x | Frequently confused with dog |
-| deer       | 1,320         | 0.26x | Often misclassified |
-| dog        | 946           | 0.19x | Starts getting ignored |
-| frog       | 678           | 0.14x | Predicted as majority class |
-| horse      | 486           | 0.10x | Nearly invisible to model |
-| ship       | 348           | 0.07x | Almost never predicted |
-| truck      | 250           | 0.05x | Completely ignored (0% recall) |
+The subsampling follows an exponential decay function:
+
+\[ n_c = n_{\max} \cdot \rho^{\frac{c}{K-1}}, \quad \rho = \frac{n_{\min}}{n_{\max}} = \frac{1}{20} \]
+
+where \(c\) is the class index (0 to K-1), producing the distribution:
+
+| Class      | Train Samples | Ratio | Imbalance factor \(\rho^{c/9}\) |
+|------------|---------------|-------|--------------------------------|
+| airplane   | 5,000         | 1.00x | 1.000 |
+| automobile | 3,584         | 0.72x | 0.717 |
+| bird       | 2,569         | 0.51x | 0.514 |
+| cat        | 1,841         | 0.37x | 0.368 |
+| deer       | 1,320         | 0.26x | 0.264 |
+| dog        | 946           | 0.19x | 0.189 |
+| frog       | 678           | 0.14x | 0.136 |
+| horse      | 486           | 0.10x | 0.097 |
+| ship       | 348           | 0.07x | 0.070 |
+| truck      | 250           | 0.05x | 0.050 |
+
+**Total training samples:** N = 17,022 (down from 50,000 balanced).
 
 ---
 
@@ -95,7 +104,32 @@ Input (3x32x32) -> Stem(7x7 conv, BN, ReLU, MaxPool)
   -> Head: AdaptiveAvgPool -> Flatten -> Dropout -> Linear(2048, 10)
 ```
 
-**Why ResNet-50?** The residual connections allow training very deep networks without vanishing gradients. The bottleneck design (1x1 -> 3x3 -> 1x1 convolutions) keeps computation manageable at ~23.5M parameters. This is deliberately over-parameterized for CIFAR-10 to study how imbalance affects a large model's learning.
+Each **Bottleneck** block computes:
+
+\[ \mathbf{y} = \sigma\!\big(\,\text{BN}(\text{Conv}_{1\times1} \to \text{Conv}_{3\times3} \to \text{Conv}_{1\times1}(\mathbf{x})) + \mathbf{x}\,\big) \]
+
+The residual shortcut \(+\mathbf{x}\) allows gradients to flow directly through the identity path, preventing vanishing gradients in deep networks. The bottleneck design reduces intermediate channels (256 -> 64 -> 64 -> 256) so each block has 3x fewer FLOPs than a naive 3x3 stack.
+
+**Parameters:** ~23.5M. Deliberately over-parameterized for CIFAR-10 to study how imbalance affects a high-capacity model.
+
+---
+
+## Formal Problem Statement
+
+Let \(\mathcal{D} = \{(\mathbf{x}_i, y_i)\}_{i=1}^{N}\) be a training set with \(K\) classes, where class \(c\) has \(n_c\) samples. The distribution is **long-tailed** if the class frequencies are highly skewed:
+
+\[ n_1 \gg n_2 \gg \cdots \gg n_K, \quad \text{with imbalance ratio } \rho = \frac{n_1}{n_K} \gg 1 \]
+
+A classifier \(f_\theta : \mathbb{R}^{d} \to \mathbb{R}^{K}\) produces logits \(\mathbf{z} = f_\theta(\mathbf{x})\). The standard empirical risk minimization (ERM) objective is:
+
+\[ \min_\theta \; \frac{1}{N} \sum_{i=1}^{N} \ell(f_\theta(\mathbf{x}_i), y_i) \]
+
+Under imbalance, the \(1/N\) average is dominated by majority classes. Each gradient step receives approximately \(n_c / N\) contribution from class \(c\), meaning minority classes contribute negligibly to parameter updates. This causes two pathologies:
+
+1. **Decision boundary bias:** The classifier hyperplane shifts toward minority regions, making the model predict majority classes even for minority inputs.
+2. **Representation collapse:** The backbone underallocates feature capacity to minority classes, producing poorly separable embeddings for rare classes.
+
+The methods below attack these pathologies at different points in the pipeline.
 
 ---
 
@@ -105,27 +139,45 @@ Each method intervenes at a different point in the machine learning pipeline. We
 
 ### Category 1: Data Re-balancing — *Fix the Data*
 
-> **Core idea:** If the model sees unequal numbers of each class, change what it sees so classes appear equally often.
-
-These methods operate **before** the model even trains. They modify the training set or the sampling strategy so every class gets fair representation.
+> **Core idea:** Modify the sampling distribution so the model receives balanced class exposure, changing the effective training distribution \(\tilde{P}\) without modifying \(\ell\) or \(f_\theta\).
 
 ---
 
 #### S1. Random Oversampling (WeightedRandomSampler)
 
-**The problem it solves:** In a standard training loop, the model sees "airplane" 20x more often than "truck" per epoch. The gradient signal for "truck" is drowned out.
+**The problem it solves:** Under standard uniform sampling, the probability of drawing a sample from class \(c\) in any batch is \(P(c) = n_c / N\). For truck: \(P(\text{truck}) = 250/17022 = 1.5\%\). The model sees truck examples so rarely that their gradients are washed out by majority classes.
 
-**How it works:** We assign each training sample a weight inversely proportional to its class frequency. PyTorch's `WeightedRandomSampler` then draws mini-batches where every class appears roughly equally. No new images are created — rare images are simply drawn more often.
+**Mathematical formulation.** We assign each sample \((\mathbf{x}_i, y_i)\) a sampling weight:
+
+\[ w_i = \frac{1}{n_{y_i}} \]
+
+where \(n_{y_i}\) is the count of class \(y_i\). The probability of drawing sample \(i\) becomes:
+
+\[ P(\text{draw } i) = \frac{w_i}{\sum_{j=1}^{N} w_j} = \frac{1/n_{y_i}}{\sum_{c=1}^{K} n_c \cdot (1/n_c)} = \frac{1}{n_{y_i} \cdot K} \]
+
+This means every **class** has equal probability \(1/K\) of being represented, regardless of its size. Within each class, samples are drawn uniformly.
+
+**Concrete example (our data):**
 
 ```
-Standard batching:     [airplane, airplane, bird, airplane, cat, airplane, ...]
-                        ^ majority class dominates every batch
+Without sampler (uniform draw from 17,022 samples):
+  P(airplane sample)  = 5000/17022 = 29.4%  per draw
+  P(truck sample)     = 250/17022  =  1.5%  per draw
 
-With WeightedSampler:  [airplane, truck, bird, horse, cat, frog, ...]
-                        ^ every class appears ~equally often
+With WeightedRandomSampler:
+  P(any airplane sample) = 1/(5000 × 10) = 0.002%  per draw
+  P(any truck sample)    = 1/(250 × 10)  = 0.040%  per draw
+  P(airplane CLASS)      = 5000 × 0.002% = 10%     ← balanced!
+  P(truck CLASS)         = 250 × 0.040%  = 10%     ← balanced!
 ```
 
-**Trade-off:** Simple and effective, but the model sees the same 250 truck images over and over. This can cause overfitting on minority classes when the imbalance ratio is extreme.
+**Gradient impact.** Under balanced sampling, the expected gradient per step becomes:
+
+\[ \mathbb{E}_{\tilde{P}}[\nabla_\theta \ell] = \frac{1}{K} \sum_{c=1}^{K} \mathbb{E}_{\mathbf{x} \sim \mathcal{D}_c}[\nabla_\theta \ell(f_\theta(\mathbf{x}), c)] \]
+
+Every class contributes equally, compared to the standard ERM gradient where majority classes dominate.
+
+**Failure mode:** Each truck image is sampled ~20x more often than each airplane image. After enough epochs, the model memorizes the 250 truck images. The training loss on truck drops to near-zero, but test accuracy plateaus — the model has overfit to the specific pixel patterns of those 250 images rather than learning the general concept of "truck".
 
 **Config:** `data.weighted_sampling: true`
 
@@ -133,21 +185,52 @@ With WeightedSampler:  [airplane, truck, bird, horse, cat, frog, ...]
 
 #### S2. SMOTE (Synthetic Minority Over-sampling Technique)
 
-**The problem it solves:** Random oversampling just duplicates existing images. The model memorizes them instead of learning generalizable features.
+**The problem it solves:** Oversampling via duplication gives no new information — the model sees identical copies. The gradient for duplicate samples is identical, providing no additional learning signal. SMOTE creates genuinely new points in the feature space.
 
-**How it works:** For each minority sample, SMOTE finds its k nearest same-class neighbors, then creates a **brand new** sample by interpolating between the two:
+**Algorithm (Chawla et al., 2002):**
 
 ```
-Original frog image (x_i)  ────────── Neighbor frog image (x_nn)
-         │                                        │
-         └──── NEW synthetic frog (somewhere on this line) ────┘
+Algorithm: SMOTE
+Input:  Minority class samples X_min = {x_1, ..., x_m}, k neighbors, N_syn
+Output: Synthetic samples S
 
-    x_new = x_i + lambda * (x_nn - x_i),    lambda ~ U(0,1)
+1. For each x_i ∈ X_min:
+   a. Find k nearest neighbors of x_i within X_min using L2 distance
+   b. Repeat floor(N_syn / m) times:
+      i.   Randomly select neighbor x_nn from the k neighbors
+      ii.  Sample λ ~ Uniform(0, 1)
+      iii. x_new = x_i + λ · (x_nn - x_i)
+      iv.  S ← S ∪ {x_new}
+2. Return S
 ```
 
-The synthetic image is a weighted blend of two real images. It lies on the line connecting them in pixel space — a genuinely new data point the model hasn't seen before.
+**Mathematical formulation.** Given a minority sample \(\mathbf{x}_i\) and its k-nearest neighbor \(\mathbf{x}_{nn}\) (both from the same class), the synthetic sample is:
 
-**Trade-off:** Reduces overfitting compared to duplication. However, for images, blending pixels can create blurry or unrealistic samples. Works best on small images (like CIFAR-10's 32x32) where pixel-space interpolation is a reasonable approximation.
+\[ \mathbf{x}_{\text{new}} = \mathbf{x}_i + \lambda \cdot (\mathbf{x}_{nn} - \mathbf{x}_i), \quad \lambda \sim \mathcal{U}(0, 1) \]
+
+Geometrically, \(\mathbf{x}_{\text{new}}\) lies on the **line segment** between \(\mathbf{x}_i\) and \(\mathbf{x}_{nn}\) in pixel space. Since both endpoints belong to the same class, the convex combination is likely to be a valid representative — assuming the class manifold is locally convex.
+
+**Concrete example (our data):**
+
+```
+truck has 250 samples, airplane has 5000.
+To reach target_ratio = 1.0: need 5000 - 250 = 4750 synthetic truck images.
+
+For each of the 250 truck images:
+  Find k=5 nearest truck neighbors
+  Generate floor(4750/250) = 19 synthetics each
+
+Synthetic image:
+  truck_42  = [0.3, 0.5, 0.2, ...]     (flattened 32×32×3 = 3072-dim vector)
+  truck_nn  = [0.4, 0.4, 0.3, ...]     (nearest neighbor)
+  λ = 0.7
+  new_truck = 0.7 × truck_42 + 0.3 × truck_nn
+            = [0.33, 0.47, 0.23, ...]   ← blend of two real trucks
+```
+
+**Why pixel-space interpolation has limitations.** For high-dimensional images, the line between two images in pixel space may pass through regions that don't look like valid images. A blend of two trucks can produce a ghostly double-exposure. However, for CIFAR-10's tiny 32x32 resolution, pixel blending is a reasonable approximation — the images are low-resolution enough that interpolation mostly produces "blurry but plausible" variants.
+
+**Complexity:** \(O(m^2 \cdot d)\) for the k-NN step (where \(m\) is the minority class size, \(d\) is dimensionality). For 250 samples at 3072 dimensions, this is trivial.
 
 **Config:** `data.oversampling.method: "smote"`, `data.oversampling.k_neighbors: 5`
 
@@ -155,20 +238,49 @@ The synthetic image is a weighted blend of two real images. It lies on the line 
 
 #### S3. ADASYN (Adaptive Synthetic Sampling)
 
-**The problem it solves:** SMOTE generates the same number of synthetics for every minority sample. But some samples are "easy" (surrounded by same-class neighbors) and some are "hard" (surrounded by majority-class neighbors near the decision boundary).
+**The problem it solves:** SMOTE distributes synthetic samples uniformly across all minority instances. But samples deep inside their class cluster are already well-classified — generating more of them wastes capacity. Samples near the decision boundary (surrounded by majority-class neighbors) are the ones the model struggles with.
 
-**How it works:** ADASYN checks each minority sample's neighborhood. If most neighbors belong to a different class (= hard to classify), it generates MORE synthetic samples around that point. Easy, well-separated samples get fewer synthetics.
+**Algorithm (He et al., 2008):**
 
 ```
-                        Easy minority sample (surrounded by same class)
-                         → generates 1 synthetic
+Algorithm: ADASYN
+Input:  Minority class X_min, majority class X_maj, k, β ∈ (0,1]
+Output: Synthetic samples S
 
-  Majority ● ● ●
-  Minority ○   ◉ ← Hard minority sample (surrounded by majority)
-  Majority ● ● ●      → generates 5 synthetics (focus here!)
+1. Compute G = (|X_maj| - |X_min|) × β  (total synthetics needed)
+2. For each x_i ∈ X_min:
+   a. Find k nearest neighbors of x_i in the FULL dataset (both classes)
+   b. Compute difficulty ratio:
+        Γ_i = (# neighbors from majority class) / k
+   c. Normalize: r_i = Γ_i / Σ_j Γ_j
+3. For each x_i:
+   a. Compute g_i = r_i × G  (number of synthetics for x_i)
+   b. Generate g_i synthetic samples using SMOTE interpolation
+4. Return S
 ```
 
-**Trade-off:** Focuses learning power where it matters most — at the class boundary. But can amplify noise if a minority sample near the boundary is actually mislabeled.
+**Key distinction from SMOTE.** The difficulty ratio \(\Gamma_i\) measures how "borderline" each minority sample is:
+
+\[ \Gamma_i = \frac{|\{\mathbf{x} \in \text{kNN}(\mathbf{x}_i) : \text{class}(\mathbf{x}) \neq \text{class}(\mathbf{x}_i)\}|}{k} \]
+
+- \(\Gamma_i \approx 0\): sample is surrounded by same-class neighbors (safe, easy) -> few synthetics
+- \(\Gamma_i \approx 1\): sample is surrounded by other-class neighbors (borderline, hard) -> many synthetics
+
+This creates a **density-adaptive** augmentation that concentrates new samples near the decision boundary, exactly where the classifier needs the most help.
+
+**Concrete example:**
+
+```
+truck_42 has 5 nearest neighbors: [truck, airplane, airplane, truck, airplane]
+  Γ_42 = 3/5 = 0.6  (hard — surrounded by airplanes)
+  → gets many synthetics
+
+truck_100 has 5 nearest neighbors: [truck, truck, truck, truck, truck]
+  Γ_100 = 0/5 = 0.0  (safe — well-separated from other classes)
+  → gets zero synthetics
+```
+
+**Risk.** If a minority sample near the boundary is actually an outlier or mislabeled, ADASYN amplifies that noise by generating many synthetic variants around it. This can push the decision boundary in the wrong direction.
 
 **Config:** `data.oversampling.method: "adasyn"`
 
@@ -176,28 +288,52 @@ The synthetic image is a weighted blend of two real images. It lies on the line 
 
 ### Category 2: Cost-Sensitive Learning — *Fix the Loss*
 
-> **Core idea:** Don't change the data. Instead, make the model **pay a higher price** for getting rare classes wrong.
-
-These methods modify the loss function so that misclassifying a rare class produces a much stronger gradient than misclassifying a common class.
+> **Core idea:** Modify the loss function \(\ell\) so that errors on minority classes produce disproportionately large gradients. The training data remains unchanged; only the penalty structure changes.
 
 ---
 
 #### S4. Weighted Cross-Entropy
 
-**The problem it solves:** Standard cross-entropy treats every misclassification equally. Getting a truck wrong costs the same as getting an airplane wrong. But we have 20x more airplane examples, so airplane gradients dominate training.
+**The problem it solves:** Standard cross-entropy loss is:
 
-**How it works:** We assign each class a weight inversely proportional to its frequency:
+\[ \mathcal{L}_{\text{CE}} = -\frac{1}{N} \sum_{i=1}^{N} \log p_{y_i} = -\frac{1}{N} \sum_{c=1}^{K} \sum_{i: y_i = c} \log p_c(\mathbf{x}_i) \]
+
+The contribution of class \(c\) to the total gradient is proportional to \(n_c / N\). For truck: \(250 / 17022 = 1.5\%\) of the total gradient. The optimizer barely notices when it misclassifies a truck.
+
+**Mathematical formulation.** Assign weight \(w_c\) to each class:
+
+\[ \mathcal{L}_{\text{WCE}} = -\frac{1}{N} \sum_{i=1}^{N} w_{y_i} \cdot \log p_{y_i} \]
+
+with inverse-frequency weights:
+
+\[ w_c = \frac{N}{K \cdot n_c} \]
+
+**Gradient derivation.** The gradient of WCE with respect to the logit \(z_c\) for a sample with true class \(y\) is:
+
+\[ \frac{\partial \mathcal{L}_{\text{WCE}}}{\partial z_c} = w_y \cdot (p_c - \mathbb{1}[c = y]) \]
+
+For a truck sample (\(w_{\text{truck}} = 6.81\)), every gradient is amplified by 6.81x compared to an airplane sample (\(w_{\text{airplane}} = 0.34\)). This compensates for truck appearing in \(1/20\)th of the batches.
+
+**Worked example with our data (\(N = 17,022\), \(K = 10\)):**
 
 ```
-w_c = N / (K * n_c)
+Class weights w_c = N / (K × n_c):
 
-  airplane: w = 17,022 / (10 * 5,000) = 0.34   (low weight)
-  truck:    w = 17,022 / (10 * 250)   = 6.81   (high weight — 20x stronger!)
+  airplane:    17022 / (10 × 5000) = 0.340
+  automobile:  17022 / (10 × 3584) = 0.475
+  bird:        17022 / (10 × 2569) = 0.663
+  cat:         17022 / (10 × 1841) = 0.925
+  deer:        17022 / (10 × 1320) = 1.290
+  dog:         17022 / (10 × 946)  = 1.799
+  frog:        17022 / (10 × 678)  = 2.511
+  horse:       17022 / (10 × 486)  = 3.502
+  ship:        17022 / (10 × 348)  = 4.891
+  truck:       17022 / (10 × 250)  = 6.809
+
+Ratio truck/airplane = 6.809 / 0.340 = 20.0x  (exactly the imbalance ratio)
 ```
 
-When the model misclassifies a truck, the gradient is amplified by 6.81x. This compensates for the fact that truck appears in fewer batches.
-
-**Trade-off:** Straightforward and well-understood. But the weights are static — they don't adapt as the model learns. Can cause instability if weights are very extreme.
+**Limitation.** The weights are fixed before training. If the model learns truck well early on (perhaps truck is visually distinctive), it keeps receiving 6.81x gradients for truck even when it already classifies truck perfectly. This can cause oscillation or push the decision boundary too far toward truck's territory, hurting neighboring classes.
 
 **Config:** `data.weighted_loss: true`, `loss.name: "ce"`
 
@@ -205,24 +341,39 @@ When the model misclassifies a truck, the gradient is amplified by 6.81x. This c
 
 #### S5. Focal Loss
 
-**The problem it solves:** Even with class weights, the model spends most of its learning capacity on examples it already classifies correctly (easy examples). A model that's 99% confident on airplanes still receives gradient from them.
+**The problem it solves:** In a typical training batch, most samples are already correctly classified with high confidence. These "easy" examples still contribute gradient, wasting optimization budget. In imbalanced settings, the majority of easy examples come from majority classes — so the model keeps refining its already-good majority predictions instead of improving on the rare, hard minority examples.
 
-**How it works:** Focal Loss adds a modulating factor that **automatically down-weights easy examples** and **up-weights hard ones**:
+**Mathematical formulation (Lin et al., 2017).** Standard CE for a sample with predicted probability \(p_t\) (probability assigned to the true class):
 
-```
-Standard CE:   L = -log(p_t)
-Focal Loss:    L = -(1 - p_t)^gamma * log(p_t)
+\[ \mathcal{L}_{\text{CE}} = -\log(p_t) \]
 
-When p_t = 0.95 (easy, confident):   (1 - 0.95)^2 = 0.0025  → nearly zero loss
-When p_t = 0.10 (hard, uncertain):   (1 - 0.10)^2 = 0.81    → full loss
+Focal Loss adds a modulating factor:
 
-gamma=0: same as standard CE
-gamma=2: strongly suppresses easy examples (default)
-```
+\[ \mathcal{L}_{\text{FL}} = -\alpha_t \cdot (1 - p_t)^\gamma \cdot \log(p_t) \]
 
-The model naturally focuses its learning on whatever it currently gets wrong — which in an imbalanced setting tends to be the minority classes.
+where \(\gamma \geq 0\) is the focusing parameter and \(\alpha_t\) is an optional class-balancing weight.
 
-**Trade-off:** No need to manually set class weights. But `gamma` is a sensitive hyperparameter. Too high and the model ignores easy examples so much that it becomes unstable.
+**Gradient analysis.** The gradient with respect to \(p_t\) is:
+
+\[ \frac{\partial \mathcal{L}_{\text{FL}}}{\partial p_t} = -\alpha_t \left[ \gamma (1 - p_t)^{\gamma - 1} \log(p_t) + \frac{(1 - p_t)^\gamma}{p_t} \right] \]
+
+The key term is \((1 - p_t)^\gamma\):
+
+| \(p_t\) (confidence) | \(\gamma=0\) (CE) | \(\gamma=1\) | \(\gamma=2\) | \(\gamma=5\) |
+|---|---|---|---|---|
+| 0.10 (hard) | 1.000 | 0.900 | 0.810 | 0.590 |
+| 0.50 | 1.000 | 0.500 | 0.250 | 0.031 |
+| 0.90 (easy) | 1.000 | 0.100 | 0.010 | 0.00001 |
+| 0.99 (trivial) | 1.000 | 0.010 | 0.0001 | 10\(^{-10}\) |
+
+With \(\gamma = 2\), a sample classified at 90% confidence receives only **1% of the loss** it would receive under standard CE. A sample at 10% confidence receives **81% of its CE loss** — almost full strength. The model naturally concentrates its learning on whatever it's currently getting wrong.
+
+**Why this helps imbalance.** In an imbalanced setting, the model quickly becomes confident on majority-class examples (easy examples). Focal Loss effectively silences these, leaving almost all gradient signal coming from hard examples — which tend to be minority-class samples. This achieves a similar effect to class weighting, but **adaptively**: the weights change as the model learns, rather than being fixed before training.
+
+**Hyperparameter sensitivity:**
+- \(\gamma = 0\): identical to CE (no focusing)
+- \(\gamma = 2\): standard choice; suppresses samples above ~80% confidence
+- \(\gamma \geq 3\): aggressive focusing; can destabilize training if too many samples are suppressed simultaneously
 
 **Config:** `loss.name: "focal"`, `loss.gamma: 2.0`
 
@@ -230,23 +381,46 @@ The model naturally focuses its learning on whatever it currently gets wrong —
 
 #### S6. Class-Balanced Loss
 
-**The problem it solves:** Inverse-frequency weighting assumes each new sample is equally informative. But in reality, the 4,999th airplane image adds almost no new information, while the 250th truck image is highly valuable.
+**The problem it solves:** Inverse-frequency weighting (S4) assigns \(w_c \propto 1/n_c\). This assumes that doubling the number of samples doubles the information. In reality, there are diminishing returns: the first 100 airplane images cover diverse viewpoints, but the 5000th airplane image is likely very similar to images already seen.
 
-**How it works:** Instead of raw counts, CB Loss uses the **effective number of samples** — a measure that accounts for diminishing marginal returns as you add more data:
+**Theoretical foundation (Cui et al., 2019).** Define the **effective number** of samples as the expected volume of feature space covered by \(n\) random samples drawn from a class whose feature space has total volume 1:
+
+\[ E_n = \frac{1 - \beta^n}{1 - \beta}, \quad \beta \in [0, 1) \]
+
+The parameter \(\beta\) controls how much overlap exists between samples:
+- \(\beta \to 0\): no overlap, every sample is unique: \(E_n = n\) (linear, same as inverse-frequency)
+- \(\beta \to 1\): high overlap (many redundant samples): \(E_n \to n\) very slowly
+
+The class-balanced weight is:
+
+\[ w_c = \frac{1}{E_{n_c}} = \frac{1 - \beta}{1 - \beta^{n_c}} \]
+
+and the loss becomes:
+
+\[ \mathcal{L}_{\text{CB}} = -\frac{1}{N}\sum_{i=1}^{N} \frac{1 - \beta}{1 - \beta^{n_{y_i}}} \cdot \ell(f_\theta(\mathbf{x}_i), y_i) \]
+
+where \(\ell\) can be CE or Focal Loss.
+
+**Worked example (\(\beta = 0.9999\)):**
 
 ```
-E_n = (1 - beta^n) / (1 - beta)
+                     n_c     E_n = (1 - 0.9999^n) / 0.0001    w = 1/E_n     vs. 1/n_c
 
-With beta = 0.9999:
-  airplane (n=5000):  E = 3935  (diminishing returns — many redundant samples)
-  truck    (n=250):   E = 247   (almost every sample is unique and valuable)
+  airplane          5000     E = 3935.4                        w = 0.000254   vs. 0.000200
+  truck              250     E = 247.0                         w = 0.004049   vs. 0.004000
 
-Weight = 1 / E_n  →  truck gets ~16x more weight (instead of naive 20x)
+  Weight ratio truck/airplane:
+    CB:               0.004049 / 0.000254 = 15.9x
+    Inverse-freq:     0.004000 / 0.000200 = 20.0x
 ```
 
-The effective number saturates as sample count grows, so adding the 5,000th airplane image barely changes its weight. This is more theoretically grounded than simple inverse-frequency.
+The CB weight ratio (15.9x) is **less extreme** than the naive inverse-frequency ratio (20.0x). This is because the effective number for airplane (3935) is lower than the raw count (5000) — many of those 5000 airplanes are redundant. For truck, \(E_{250} \approx 247\), very close to the raw count — nearly every truck image is unique and informative.
 
-**Trade-off:** Better calibrated weights than inverse-frequency. The `beta` parameter is usually set close to 1 (0.9999) and is not very sensitive.
+**When paired with Focal Loss (CB-Focal):**
+
+\[ \mathcal{L}_{\text{CB-FL}} = -\frac{1 - \beta}{1 - \beta^{n_{y_i}}} \cdot (1 - p_t)^\gamma \cdot \log(p_t) \]
+
+This combines the static class reweighting of CB with the dynamic example-weighting of Focal, addressing both the class-level and example-level imbalance simultaneously.
 
 **Config:** `loss.name: "cb"`, `loss.beta: 0.9999`
 
@@ -254,25 +428,44 @@ The effective number saturates as sample count grows, so adding the 5,000th airp
 
 ### Category 3: Training Strategy — *Fix the Training Loop*
 
-> **Core idea:** Don't change the data or the loss formula. Change **how the model processes** its inputs during training — smooth the labels, mix the images, or regularize the decision boundary.
+> **Core idea:** Modify the training procedure — label representation, data augmentation, or the training schedule — without changing the loss formula itself. These techniques are general regularizers that provide secondary benefits for imbalanced learning.
 
 ---
 
 #### S7. Label Smoothing
 
-**The problem it solves:** With hard one-hot labels ([0, 0, 0, 1, 0, ...]), the model is pushed to be 100% confident. On imbalanced data, this causes the model to become extremely confident on majority classes and assign near-zero probability to everything else.
+**The problem it solves:** With hard one-hot targets, the model is pushed toward infinite logit magnitude for the true class. The optimal logits under standard CE are \(z_y \to +\infty\) and \(z_c \to -\infty\) for \(c \neq y\). On imbalanced data, this causes the model to produce extremely high logits for majority classes and extremely negative logits for minority classes, making it nearly impossible for a minority class to "win" the argmax.
 
-**How it works:** Replace the hard target with a soft target that reserves a small probability for all classes:
+**Mathematical formulation.** Replace the hard target \(\mathbf{y}_{\text{hard}} = \mathbf{e}_c\) (one-hot vector) with:
+
+\[ \mathbf{y}_{\text{smooth}} = (1 - \varepsilon) \cdot \mathbf{e}_c + \frac{\varepsilon}{K} \cdot \mathbf{1} \]
+
+The loss becomes:
+
+\[ \mathcal{L}_{\text{LS}} = (1 - \varepsilon) \cdot \mathcal{H}({\mathbf{e}_c}, \mathbf{p}) + \varepsilon \cdot \mathcal{H}(\mathbf{u}, \mathbf{p}) \]
+
+where \(\mathcal{H}(\mathbf{q}, \mathbf{p}) = -\sum_c q_c \log p_c\) is cross-entropy, and \(\mathbf{u} = \frac{1}{K}\mathbf{1}\) is the uniform distribution.
+
+**Concrete example (\(\varepsilon = 0.1\), \(K = 10\)):**
 
 ```
-Hard label:    [0, 0, 0, 1, 0, 0, 0, 0, 0, 0]    ← "100% cat"
-Smoothed:      [0.01, 0.01, 0.01, 0.91, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
-                                                    ← "91% cat, but keep an open mind"
+Hard target for "cat" (class 3):
+  [0, 0, 0, 1, 0, 0, 0, 0, 0, 0]
+
+Smoothed target:
+  Non-cat classes: ε/K = 0.1/10 = 0.01
+  Cat class:       1 - ε + ε/K = 0.9 + 0.01 = 0.91
+
+  [0.01, 0.01, 0.01, 0.91, 0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
 ```
 
-This prevents the model from pushing logits to extreme values, which improves calibration and makes the model less likely to assign zero probability to minority classes.
+**Effect on logit magnitude.** The optimal logits under label smoothing satisfy:
 
-**Trade-off:** Simple regularizer with almost no computational cost. But it treats all "wrong" classes equally — a cat being confused with a dog is penalized the same as being confused with a ship.
+\[ p_c^* = (1-\varepsilon)\cdot\mathbb{1}[c=y] + \varepsilon/K \]
+
+This means the model targets \(p_y = 0.91\) instead of \(p_y = 1.0\). The logits don't need to go to infinity — they converge to a finite gap. This prevents the extreme logit magnitudes that cause minority classes to receive near-zero probability.
+
+**Connection to imbalance.** Label smoothing acts as a **calibration regularizer**: it keeps the model's probability estimates closer to the true predictive uncertainty. On imbalanced data, a well-calibrated model is less likely to assign probability 0.0 to minority classes (which would require \(z_{\text{minority}} \to -\infty\)).
 
 **Config:** `loss.name: "label_smoothing"`, `loss.smoothing: 0.1`
 
@@ -280,21 +473,37 @@ This prevents the model from pushing logits to extreme values, which improves ca
 
 #### S8. Mixup
 
-**The problem it solves:** The model only sees "pure" images of each class. It learns sharp, brittle decision boundaries that don't generalize well — especially for minority classes with few examples.
+**The problem it solves:** The model only sees individual training images with hard labels. It learns decision boundaries that pass through gaps between training points — fragile boundaries that don't generalize, especially where minority-class data is sparse.
 
-**How it works:** During training, randomly pick two images and blend them with a random ratio. The labels are blended with the same ratio:
+**Mathematical formulation (Zhang et al., 2018).** For a random pair \((\mathbf{x}_i, y_i)\) and \((\mathbf{x}_j, y_j)\):
+
+\[ \tilde{\mathbf{x}} = \lambda \mathbf{x}_i + (1 - \lambda) \mathbf{x}_j \]
+\[ \tilde{\mathcal{L}} = \lambda \cdot \ell(f_\theta(\tilde{\mathbf{x}}), y_i) + (1 - \lambda) \cdot \ell(f_\theta(\tilde{\mathbf{x}}), y_j) \]
+
+where \(\lambda \sim \text{Beta}(\alpha, \alpha)\).
+
+**The Beta distribution and \(\alpha\).**
 
 ```
-Image A (cat)  ──┐
-                 ├──>  Mixed = 0.6 * A + 0.4 * B
-Image B (dog)  ──┘     Label = 0.6 * [cat] + 0.4 * [dog]
-
-The model sees a 60/40 cat-dog blend and learns to output 60% cat, 40% dog.
+α = 0.1: Beta(0.1, 0.1) → U-shaped, λ near 0 or 1 (weak mixing)
+α = 0.4: Beta(0.4, 0.4) → moderately U-shaped (default)
+α = 1.0: Beta(1.0, 1.0) = Uniform(0, 1) (any mix ratio equally likely)
+α = 2.0: Beta(2.0, 2.0) → bell-shaped around 0.5 (strong mixing)
 ```
 
-This creates virtual training examples between classes, forcing the model to learn smoother transitions. The decision boundary becomes more robust.
+**Theoretical justification.** Mixup implements vicinal risk minimization (VRM). Standard ERM places all probability mass on the observed data points. VRM smears probability mass into a **vicinity** around each point. The Mixup vicinity is the set of convex combinations of training pairs.
 
-**Trade-off:** Excellent regularizer — it's like free data augmentation. But the blended images can look unnatural, and the model never sees a "pure" example during training. For imbalanced data, a minority sample can still be drowned out if it's always mixed with a majority sample.
+The VRM objective is:
+
+\[ R_{\text{VRM}}(\theta) = \int \ell(f_\theta(\mathbf{x}), y) \, d\tilde{P}(\mathbf{x}, y) \]
+
+where \(\tilde{P}\) has support on the convex hull of the training set. This smooths the decision boundary — the classifier can't fit arbitrary sharp boundaries because it must maintain smooth predictions across the interpolation path.
+
+**Gradient analysis for imbalance.** Consider a batch where sample \(i\) is truck (minority) and sample \(j\) is airplane (majority), with \(\lambda = 0.3\):
+
+\[ \tilde{\mathcal{L}} = 0.3 \cdot \ell(f_\theta(\tilde{\mathbf{x}}), \text{truck}) + 0.7 \cdot \ell(f_\theta(\tilde{\mathbf{x}}), \text{airplane}) \]
+
+The gradient with respect to truck is scaled by 0.3 — the minority class contributes weakly. Since random pairing with the imbalanced distribution means truck is almost always the minority member of the pair, Mixup can actually **suppress** minority gradients relative to pure CE on the same samples.
 
 **Config:** `training.mixup.mode: "mixup"`, `training.mixup.alpha: 0.4`
 
@@ -302,24 +511,34 @@ This creates virtual training examples between classes, forcing the model to lea
 
 #### S9. CutMix
 
-**The problem it solves:** Mixup blends entire images together, which can lose spatial structure. The resulting blurry images don't force the model to learn localized features.
+**The problem it solves:** Mixup blends entire images via linear interpolation, producing ghostly overlays. The resulting images lose spatial coherence — the model can't learn localized features. CutMix preserves spatial structure by keeping intact regions from each image.
 
-**How it works:** Instead of blending pixel values, CutMix **cuts a rectangular patch** from one image and pastes it onto another. The label is mixed proportional to the patch area:
+**Mathematical formulation (Yun et al., 2019).** Instead of pixel-wise blending, CutMix creates a binary mask \(\mathbf{M} \in \{0, 1\}^{H \times W}\) defining a rectangular region:
+
+\[ \tilde{\mathbf{x}} = \mathbf{M} \odot \mathbf{x}_i + (1 - \mathbf{M}) \odot \mathbf{x}_j \]
+
+The mask \(\mathbf{M}\) is 0 inside a randomly placed rectangle and 1 outside. The mixing ratio is determined by the area:
+
+\[ \lambda = 1 - \frac{(\text{box width}) \times (\text{box height})}{W \times H} \]
+
+**Box generation.** Given \(\lambda \sim \text{Beta}(\alpha, \alpha)\):
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌──────┬──────┐
-│             │     │             │     │      │ dog  │
-│    cat      │  +  │    dog      │  =  │ cat  │ patch│
-│             │     │             │     │      │      │
-└─────────────┘     └─────────────┘     └──────┴──────┘
-
-If the dog patch covers 30% of the image:
-  Label = 0.7 * [cat] + 0.3 * [dog]
+1. cut_ratio = sqrt(1 - λ)
+2. cut_h = H × cut_ratio,  cut_w = W × cut_ratio
+3. Center (cx, cy) ~ Uniform([0,H]) × Uniform([0,W])
+4. Box = clip([cx - cut_h/2, cy - cut_w/2, cx + cut_h/2, cy + cut_w/2])
+5. Recompute λ = 1 - (actual box area) / (H × W)
 ```
 
-The model must learn to recognize objects from partial views, which builds stronger localized features. Unlike Mixup, the uncut regions remain fully intact and realistic.
+**Why spatial coherence matters.** Consider a cat image with a dog patch pasted in. The model sees a realistic cat body + a realistic dog face. It must learn to:
+1. Recognize "cat" from the partial cat regions
+2. Recognize "dog" from the patch region
+3. Weight its predictions by the area ratio
 
-**Trade-off:** Stronger regularizer than Mixup. The model learns to recognize objects even when partially occluded. But the random patch location can sometimes cut out the entire object, leaving only background.
+This forces the model to be robust to occlusion and to attend to local features rather than relying on global statistics. For imbalanced data, this is valuable because minority classes often have to be recognized from limited visual cues.
+
+**Advantage over Mixup.** CutMix images contain regions of **unmodified, realistic** pixels. The features extracted from uncut regions are identical to features from the original image. Only the cut boundary introduces artifacts. This is a more information-preserving augmentation than the global blending of Mixup.
 
 **Config:** `training.mixup.mode: "cutmix"`, `training.mixup.alpha: 1.0`
 
@@ -327,26 +546,59 @@ The model must learn to recognize objects from partial views, which builds stron
 
 #### S10. Remix — *Imbalance-Aware Mixup*
 
-**The problem it solves:** Standard Mixup uses the same mixing ratio (lambda) for both image blending and label blending. When a minority sample (truck) is mixed with a majority sample (airplane), the truck contribution is often small (e.g., 0.2). The label says "20% truck, 80% airplane" — the minority class is still suppressed.
+**The problem it solves:** Standard Mixup uses the same \(\lambda\) for both image blending and label blending. This is mathematically elegant but imbalance-blind: when a minority sample gets a small \(\lambda\) (say 0.2), its label contribution is also only 20%, further suppressing the minority gradient. Remix decouples the two lambdas to explicitly boost minority representation.
 
-**How it works:** Remix **decouples** the image lambda from the label lambda. The image is still blended normally, but the label is biased toward the minority class in the pair:
+**Mathematical formulation (Chou et al., 2020).** Given samples \((\mathbf{x}_a, y_a)\) and \((\mathbf{x}_b, y_b)\) with class counts \(n_{y_a}\) and \(n_{y_b}\):
+
+**Feature mixing** (unchanged from Mixup):
+
+\[ \tilde{\mathbf{x}} = \lambda_f \cdot \mathbf{x}_a + (1 - \lambda_f) \cdot \mathbf{x}_b, \quad \lambda_f \sim \text{Beta}(\alpha, \alpha) \]
+
+**Label mixing** (biased toward minority):
+
+\[ \lambda_l = \begin{cases}
+\max(\lambda_f, \kappa) & \text{if } \lambda_f < \tau \text{ and } n_{y_a} \leq n_{y_b} \\
+\min(\lambda_f, 1 - \kappa) & \text{if } \lambda_f < \tau \text{ and } n_{y_a} > n_{y_b} \\
+\lambda_f & \text{otherwise}
+\end{cases} \]
+
+The loss is:
+
+\[ \tilde{\mathcal{L}} = \lambda_l \cdot \ell(f_\theta(\tilde{\mathbf{x}}), y_a) + (1 - \lambda_l) \cdot \ell(f_\theta(\tilde{\mathbf{x}}), y_b) \]
+
+**How the parameters interact:**
+
+| Parameter | Role | Default |
+|-----------|------|---------|
+| \(\tau\) | Activation threshold: only bias when \(\lambda_f < \tau\) (minority has small feature weight) | 0.5 |
+| \(\kappa\) | Minority label floor: minority class gets at least \(\kappa\) label weight | 0.9 |
+
+**Worked example:**
 
 ```
+Pair: (truck, airplane), λ_f = 0.3
+  n_truck = 250, n_airplane = 5000 → truck is the minority
+
 Standard Mixup:
-  Image = 0.3 * truck + 0.7 * airplane     ← 30% truck pixels
-  Label = 0.3 * [truck] + 0.7 * [airplane] ← only 30% truck label
+  Image: 0.3 × truck + 0.7 × airplane
+  Loss:  0.3 × L(pred, truck) + 0.7 × L(pred, airplane)
+         ^^^                      ^^^
+         truck gets only 30%      airplane gets 70%
 
-Remix (tau=0.5, kappa=0.9):
-  Image = 0.3 * truck + 0.7 * airplane     ← same 30% truck pixels
-  Label = 0.9 * [truck] + 0.1 * [airplane] ← but 90% truck label!
-
-  When lam < tau and truck is the minority:
-    lam_label = max(lam, kappa) = max(0.3, 0.9) = 0.9
+Remix (τ=0.5, κ=0.9):
+  λ_f = 0.3 < τ = 0.5 → activate!
+  truck is minority (250 < 5000) → λ_l = max(0.3, 0.9) = 0.9
+  Image: 0.3 × truck + 0.7 × airplane  (SAME image)
+  Loss:  0.9 × L(pred, truck) + 0.1 × L(pred, airplane)
+         ^^^                      ^^^
+         truck gets 90% label!    airplane only 10%!
 ```
 
-This forces the model to associate even majority-dominated images with the minority class, amplifying the minority's gradient signal. The `tau` parameter controls when to activate the bias (only when the minority has a small mixing ratio), and `kappa` controls how strongly to bias toward the minority.
+**Gradient analysis.** The expected gradient contribution from truck in a Remix pair is:
 
-**Trade-off:** Directly targets the minority suppression problem in standard Mixup. But over-aggressive kappa values can make the model overfit to minority features at the expense of majority accuracy. Best used when the imbalance ratio is large (>10x).
+\[ \mathbb{E}[\nabla_\theta \ell_{\text{truck}}] \propto \mathbb{E}[\lambda_l] \gg \mathbb{E}[\lambda_f] \]
+
+For \(\kappa = 0.9\), whenever \(\lambda_f < 0.5\) (half the time with Beta(1,1)), the truck label weight jumps to 0.9. This makes the expected \(\lambda_l\) for the minority class approximately 0.7 (vs. 0.5 under standard Mixup), a 40% boost in expected gradient magnitude.
 
 **Config:** `training.mixup.mode: "remix"`, `training.mixup.remix.tau: 0.5`, `training.mixup.remix.kappa: 0.9`
 
@@ -354,36 +606,39 @@ This forces the model to associate even majority-dominated images with the minor
 
 #### S11. Decoupled Training (cRT)
 
-**The problem it solves:** When training end-to-end on imbalanced data, the backbone learns good features for majority classes but poor features for minority classes. Rebalancing techniques help the classifier but can hurt the feature extractor by feeding it unnatural data distributions.
+**The problem it solves:** Deep networks can be decomposed into a **feature extractor** \(\phi(\mathbf{x}; \theta_{\text{backbone}})\) and a **linear classifier** \(W\mathbf{h} + \mathbf{b}\). Kang et al. (2020) demonstrated a surprising finding: **features learned on imbalanced data are actually high-quality**. The representation space separates classes well — it's only the linear classifier that's biased toward majority classes. Retraining the classifier on balanced data fixes the bias without harming the features.
 
-**How it works:** cRT splits training into two stages:
+**Two-stage algorithm:**
 
 ```
-Stage 1: Learn features (normal training, imbalanced data)
-  ┌──────────────────────────────┐
-  │  Backbone       Classifier   │
-  │  (unfrozen)     (unfrozen)   │
-  │                              │
-  │  Train on original           │
-  │  imbalanced distribution     │
-  │  → learns rich features      │
-  └──────────────────────────────┘
+Algorithm: cRT (Classifier Re-Training)
 
-Stage 2: Retrain classifier only (balanced)
-  ┌──────────────────────────────┐
-  │  Backbone       Classifier   │
-  │  (FROZEN ❄️)     (unfrozen)  │
-  │                              │
-  │  Retrain head only with      │
-  │  balanced sampling/loss      │
-  │  → fixes the decision        │
-  │    boundary                  │
-  └──────────────────────────────┘
+Stage 1 — Representation learning (standard ERM on imbalanced data):
+  1. Train full model f_θ = W · φ(x; θ_backbone) on imbalanced D
+  2. Use standard CE loss, no class balancing
+  3. The backbone learns rich, discriminative features for ALL classes
+     (even minority classes get some representation because their
+      features are useful for separating nearby majority classes)
+
+Stage 2 — Classifier re-training:
+  4. FREEZE θ_backbone (no gradient flows to backbone)
+  5. Re-initialize the classifier head W, b
+  6. Train ONLY W, b using class-balanced sampling/loss
+  7. Use higher learning rate (e.g., 0.01 vs. 0.001) since we're
+     only learning K × d_embed parameters (10 × 2048 = 20K params)
 ```
 
-The key insight from Kang et al. (2020) is that **feature representations learned from imbalanced data are actually good** — it's only the classifier (the last linear layer) that gets biased toward majority classes. By freezing the backbone and retraining just the classifier with balanced data, cRT fixes the bias without losing the learned features.
+**Why imbalanced features are good.** Consider two minority classes (truck, ship) that are visually distinct. Even though they appear rarely, the backbone must learn to distinguish their features from nearby majority classes. The feature extractor doesn't directly produce class predictions — it extracts useful visual primitives (edges, textures, shapes) that are shared across classes. The imbalanced distribution provides enough signal for the backbone to learn a well-structured embedding space.
 
-**Trade-off:** Elegant two-stage approach with strong theoretical backing. Stage 2 is very fast (only classifier parameters). But it doubles the training recipe complexity and assumes the backbone features are already good enough after Stage 1.
+The problem is in the last linear layer \(W \in \mathbb{R}^{K \times d}\). Under imbalanced training, the weight vector \(\mathbf{w}_c\) for a majority class gets much larger in norm than \(\mathbf{w}_c\) for a minority class:
+
+\[ \|\mathbf{w}_{\text{airplane}}\| \gg \|\mathbf{w}_{\text{truck}}\| \]
+
+This is because the airplane weight vector receives 20x more gradient updates, pushing it to larger magnitudes. The classifier is biased simply because majority weight vectors are **bigger**, not because the features are bad.
+
+**Stage 2 fixes this.** By retraining the classifier with balanced sampling, each \(\mathbf{w}_c\) receives equal gradient, and the norms equalize. The decision boundaries shift to their unbiased positions.
+
+**Our implementation.** In Stage 2, we freeze all parameters except those containing `"head"` or `"fc"` in their name. We use SGD with lr=0.01 (10x the Stage 1 lr) and momentum=0.9. The high learning rate is appropriate because we're only optimizing 20K parameters (vs. 23.5M in the full model), and we want to quickly converge to the balanced solution.
 
 **Config:** `training.crt.enabled: true`, `training.crt.classifier_epochs: 5`, `training.crt.lr: 0.01`
 
@@ -391,31 +646,78 @@ The key insight from Kang et al. (2020) is that **feature representations learne
 
 ### Category 4: Logit Adjustment — *Fix the Predictions*
 
-> **Core idea:** Don't change data, loss, or training. Instead, **adjust the model's output logits** to compensate for the skewed class prior. The model trains normally but its predictions are corrected mathematically.
+> **Core idea:** The model's output logits are biased because training on \(P_{\text{train}}(y)\) produces predictions that approximate \(P_{\text{train}}(y|\mathbf{x})\) rather than the desired balanced posterior \(P_{\text{balanced}}(y|\mathbf{x})\). We can correct for this bias mathematically by adjusting the logits.
+
+**Bayesian derivation.** By Bayes' theorem:
+
+\[ P_{\text{train}}(y|\mathbf{x}) = \frac{P(\mathbf{x}|y) \cdot P_{\text{train}}(y)}{P(\mathbf{x})} \]
+
+Under a balanced distribution \(P_{\text{bal}}(y) = 1/K\):
+
+\[ P_{\text{bal}}(y|\mathbf{x}) = \frac{P(\mathbf{x}|y) \cdot (1/K)}{P(\mathbf{x})} = \frac{P_{\text{train}}(y|\mathbf{x})}{P_{\text{train}}(y) \cdot K} \]
+
+Taking the log and noting that \(z_c = \log P_{\text{train}}(c|\mathbf{x})\) (up to a constant):
+
+\[ z_c^{\text{adjusted}} = z_c - \log P_{\text{train}}(c) = z_c - \log(n_c / N) \]
+
+This is equivalent to **adding** \(\log(n_c / N)\) to the logits during training (since the negative sign cancels with the CE loss direction), which is what Balanced Softmax does.
 
 ---
 
 #### S12. Balanced Softmax
 
-**The problem it solves:** Standard softmax converts logits to probabilities without considering that some classes are naturally more likely in the training set. The model's posterior estimate is biased toward majority classes.
+**Mathematical formulation (Ren et al., 2020).** The standard softmax probability is:
 
-**How it works:** Before computing softmax, add `log(class_prior)` to each logit. This shifts the decision boundary so minority classes don't need to produce disproportionately high logits to be selected:
+\[ p_c = \frac{\exp(z_c)}{\sum_{j=1}^{K} \exp(z_j)} \]
+
+Balanced Softmax adjusts the logits by the log class prior:
+
+\[ p_c^{\text{BS}} = \frac{n_c \cdot \exp(z_c)}{\sum_{j=1}^{K} n_j \cdot \exp(z_j)} = \frac{\exp(z_c + \log n_c)}{\sum_{j=1}^{K} \exp(z_j + \log n_j)} \]
+
+The loss is standard CE applied to the adjusted probabilities:
+
+\[ \mathcal{L}_{\text{BS}} = -\log p_{y}^{\text{BS}} = -\log \frac{\exp(z_y + \log n_y)}{\sum_{j} \exp(z_j + \log n_j)} \]
+
+**Gradient analysis.** The gradient with respect to logit \(z_c\) is:
+
+\[ \frac{\partial \mathcal{L}_{\text{BS}}}{\partial z_c} = p_c^{\text{BS}} - \mathbb{1}[c = y] \]
+
+The adjusted probability \(p_c^{\text{BS}}\) shifts probability mass away from majority classes (which have large \(n_c\) but the effect is absorbed into the normalization), creating a more balanced posterior estimate.
+
+**Worked example:**
 
 ```
-Standard softmax:        P(y=c|x) = exp(z_c) / Σ exp(z_j)
+Suppose model produces logits z = [2.0, 1.5] for classes airplane (n=5000) and truck (n=250).
 
-Balanced softmax:        P(y=c|x) = exp(z_c + log(π_c)) / Σ exp(z_j + log(π_j))
+Standard softmax:
+  P(airplane) = exp(2.0) / (exp(2.0) + exp(1.5))
+              = 7.39 / (7.39 + 4.48) = 62.2%
+  P(truck)    = 37.8%
+  → Predicts airplane
 
-Where π_c = n_c / N is the class prior:
-  airplane: log(5000/17022) = -1.22   (logits shifted DOWN — majority penalized)
-  truck:    log(250/17022)  = -4.22   (logits shifted DOWN less)
+Balanced Softmax (add log prior):
+  z_airplane + log(5000) = 2.0 + 8.52 = 10.52
+  z_truck + log(250)     = 1.5 + 5.52 = 7.02
+  P_BS(airplane) = exp(10.52) / (exp(10.52) + exp(7.02))
+                 = 37,163 / (37,163 + 1,122) = 97.1%
 
-Net effect: truck's adjusted logit is +3.0 higher relative to airplane.
+Wait — that made airplane win MORE? The confusion is that during TRAINING,
+we minimize -log P_BS(y|x). The log(n_c) terms shift the loss landscape
+so that the OPTIMAL logits z* satisfy:
+
+  z*_c ∝ log P(x|c)  (class-conditional likelihood)
+
+rather than the biased:
+
+  z*_c ∝ log P(x|c) + log P_train(c)
+
+In other words, BS removes the prior bias from the learned logits.
+At TEST time, the raw logits z are used directly (without the log n_c shift),
+and they produce balanced predictions because they've been trained to
+encode likelihoods rather than posteriors.
 ```
 
-This correction has a Bayesian interpretation: it converts the biased posterior P(y|x, imbalanced data) into the balanced posterior P(y|x, balanced data).
-
-**Trade-off:** Theoretically principled with no hyperparameters beyond the class counts. Works best when the model is well-calibrated. Can hurt early in training when the model's logits are still random.
+**Key insight.** Balanced Softmax doesn't change the prediction rule at test time. It changes the **training objective** so that the model learns logits proportional to the class-conditional likelihood \(P(\mathbf{x}|c)\) rather than the biased posterior \(P_{\text{train}}(c|\mathbf{x})\). At test time, these unbiased logits produce balanced predictions.
 
 **Config:** `loss.name: "balanced_softmax"`
 
@@ -423,22 +725,37 @@ This correction has a Bayesian interpretation: it converts the biased posterior 
 
 #### S13. Logit Adjustment (Post-hoc)
 
-**The problem it solves:** Same as Balanced Softmax, but provides a tunable strength parameter `tau` to control how aggressively to correct.
+**Mathematical formulation (Menon et al., 2021).** Logit Adjustment generalizes Balanced Softmax with a temperature parameter \(\tau\):
 
-**How it works:** Identical to Balanced Softmax but with a scaling factor `tau`:
+\[ \mathcal{L}_{\text{LA}} = -\log \frac{\exp(z_y + \tau \cdot \log \pi_y)}{\sum_{j} \exp(z_j + \tau \cdot \log \pi_j)} \]
+
+where \(\pi_c = n_c / N\) is the class prior.
+
+**The role of \(\tau\):**
+
+| \(\tau\) | Effect | Interpretation |
+|------|--------|----------------|
+| 0.0 | No adjustment | Standard CE — ignores imbalance |
+| 1.0 | Full correction | Equivalent to Balanced Softmax — Bayes-optimal |
+| < 1.0 | Partial correction | Conservative — trusts the model's natural calibration |
+| > 1.0 | Over-correction | Aggressively favors minority — can hurt majority accuracy |
+
+**Fisher-consistent property.** Menon et al. (2021) proved that the minimizer of the Logit Adjustment loss with \(\tau = 1\) satisfies:
+
+\[ f^*(\mathbf{x}) = \arg\max_c \; P(\mathbf{x}|c) \]
+
+This is the **Bayes-optimal** classifier under balanced class priors, regardless of the training distribution. This theoretical guarantee makes Logit Adjustment one of the most principled methods for handling imbalance.
+
+**Relationship between methods:**
 
 ```
-Adjusted logit:   z'_c = z_c + tau * log(π_c)
-
-tau = 0.0:  no adjustment (standard CE)
-tau = 1.0:  full Balanced Softmax correction
-tau > 1.0:  over-correct (boost minority even more)
-tau < 1.0:  partial correction (conservative)
+tau = 0.0  →  Standard CE (no correction)
+tau = 1.0  →  Balanced Softmax (Ren et al., 2020)
+tau = 1.0  →  Logit Adjustment (Menon et al., 2021)
+              (identical at tau=1; differs in that LA supports tau ≠ 1)
 ```
 
-The `tau` parameter lets you interpolate between no correction and full correction. This is useful when the imbalance ratio is uncertain or when you want to tune the trade-off between majority and minority accuracy.
-
-**Trade-off:** More flexible than Balanced Softmax — you can tune tau on a validation set. But this adds a hyperparameter to search over. In practice, tau=1.0 (equivalent to Balanced Softmax) is a strong default.
+**When to use \(\tau \neq 1\).** If the model is poorly calibrated (e.g., early in training, or with a small model), the Bayesian correction may be too aggressive. Using \(\tau < 1\) provides a conservative correction. The optimal \(\tau\) can be found by validation.
 
 **Config:** `loss.name: "logit_adjust"`, `loss.tau: 1.0`
 
@@ -446,22 +763,30 @@ The `tau` parameter lets you interpolate between no correction and full correcti
 
 ### Category 5: Combined — *Stack the Best of Each*
 
-> **Core idea:** Each category attacks imbalance from a different angle. The strongest solution uses one technique from each category simultaneously.
+> **Core idea:** Each category addresses a different symptom of imbalance. Combining orthogonal interventions can provide additive benefits. The key is choosing techniques that don't **conflict** (e.g., don't combine two loss reweighting schemes that fight over gradient magnitudes).
 
 **Config:** `configs/s8_combined_best.yaml`
 
-We stack techniques that don't conflict with each other:
+We stack techniques from different intervention points:
 
-| Where it acts | Technique | What it does |
-|---------------|-----------|--------------|
-| **Data** | Weighted Sampler | Every class appears equally in each batch |
-| **Data** | Strong Augmentation | ColorJitter + RandomErasing create more visual variety |
-| **Loss** | Balanced Softmax | Log-prior logit adjustment for unbiased posteriors |
-| **Loss** | Weighted Loss | Inverse-frequency gradient amplification |
-| **Training** | Remix | Minority-biased label mixing for augmented images |
-| **Training** | cRT | Freeze backbone, retrain classifier with balanced signal |
+| Layer | Technique | Mechanism | Interaction |
+|-------|-----------|-----------|-------------|
+| **Sampling** | WeightedRandomSampler | Equalizes class frequency in mini-batches | Ensures every class gets gradient signal every step |
+| **Augmentation** | ColorJitter + RandomErasing | Expands visual diversity of minority samples | Compensates for limited minority image variety |
+| **Augmentation** | Remix | Minority-biased label mixing | Amplifies minority gradient during mixed training |
+| **Loss** | Balanced Softmax | Log-prior logit correction | Removes prior bias from learned logits |
+| **Loss** | Class weights | Inverse-frequency scaling | Amplifies minority loss magnitude |
+| **Training** | cRT (Stage 2) | Freeze backbone, retrain classifier | Fixes classifier bias without hurting features |
 
-**Why these specific combinations?** The Weighted Sampler ensures balanced exposure. Balanced Softmax adjusts the decision boundary mathematically. Remix amplifies the minority signal during augmentation. cRT decouples feature learning from classifier calibration. Strong augmentation compensates for limited diversity in minority classes.
+**Why certain combinations work:**
+1. Weighted Sampler + Balanced Softmax are complementary: the sampler fixes the **data exposure**, while Balanced Softmax fixes the **output bias**. Neither modifies the loss magnitude.
+2. Remix + cRT are complementary: Remix improves Stage 1 feature learning by boosting minority gradients during augmentation; cRT independently recalibrates the classifier in Stage 2.
+3. Strong augmentation + any method: augmentation increases effective sample diversity, which benefits every other technique.
+
+**Why certain combinations conflict:**
+- Class-Weighted CE + CB Loss: both scale the loss by class-dependent factors. The combined weight would be \(w_c^{\text{CE}} \times w_c^{\text{CB}}\), which can produce extreme values for rare classes.
+- Mixup + CutMix: both modify the input images. Running both simultaneously produces doubly-augmented, unrealistic inputs.
+- Oversampling + Remix: oversampling already balances the data, so Remix's minority-biasing label adjustment over-corrects.
 
 ---
 
@@ -488,17 +813,29 @@ All 12 strategies trained on the same imbalanced CIFAR-10 (20:1 ratio) with iden
 | 11 | Logit Adjustment | 28.31% | 0.2542 | Logit Adj. | Same as Balanced Softmax (tau=1.0). Among the best single-technique results |
 | 12 | Decoupled cRT | 24.52% | 0.1420 | Training | cRT phase helps but 1 epoch of feature learning is too little for the backbone |
 
-> **Key insights from 12-strategy benchmark:**
->
-> 1. **Data-level methods dominate at 1 epoch.** Oversampling (35.59%) wins by a wide margin because it fixes the data distribution before training even starts.
->
-> 2. **Logit adjustment methods are the best "free lunch".** Balanced Softmax and Logit Adjustment (both 28.31%) achieve strong results with zero extra data manipulation — they just mathematically correct the output bias.
->
-> 3. **Cost-sensitive losses form a solid middle tier.** Weighted CE (27.12%) and CB Loss (27.88%) provide decent corrections but need more epochs to shine.
->
-> 4. **Regularization-based methods (Mixup, CutMix, Remix, Label Smoothing) underperform at 1 epoch.** These are designed to prevent overfitting, which isn't the bottleneck yet. With 20+ epochs, they catch up.
->
-> 5. **Combined strategies can backfire with insufficient training.** The combined best (16.59%) and Remix (10.27%) score low because they stack multiple aggressive interventions that each need multiple epochs to stabilize. With longer training, the combined approach typically becomes the strongest.
+### Analysis by Category
+
+**Convergence rate ordering (from fastest to slowest):**
+
+```
+Speed of convergence at 1 epoch:
+
+  Data-level ▸▸▸▸▸▸▸▸▸▸  (immediate — changes distribution before training)
+  Logit Adj  ▸▸▸▸▸▸▸▸    (immediate — mathematical correction, no learning needed)
+  Cost-Sens  ▸▸▸▸▸▸      (fast — reweights gradients but needs a few epochs to settle)
+  Regulariz  ▸▸▸          (slow — prevents overfitting, which isn't the problem yet)
+  Combined   ▸            (slowest — many interacting components need time to stabilize)
+```
+
+**Why Oversampling wins at 1 epoch.** WeightedRandomSampler changes the **data distribution** seen by the model. From the very first batch, every class has ~10% representation. The model receives balanced gradient signal from step 1. No other technique provides this immediate correction — all others still sample from the imbalanced distribution and try to correct downstream.
+
+**Why Balanced Softmax / Logit Adjustment are second.** These methods add a constant \(\log(n_c)\) shift to logits. This shift is computed from class counts (known before training) and doesn't need to be learned. From the first gradient step, the loss landscape is adjusted so that the model must produce higher logits for minority classes to minimize the loss. The correction is instant but indirect — the model still sees imbalanced batches.
+
+**Why Focal Loss underperforms early.** Focal Loss modulates by \((1-p_t)^\gamma\). At epoch 1, \(p_t \approx 0.1\) for all classes (random initialization). The modulating factor \((1-0.1)^2 = 0.81\) is nearly identical for all samples. Focal Loss provides almost no differentiation between easy and hard examples because **nothing is easy yet**. It only becomes useful once the model has learned to classify some samples confidently.
+
+**Why Combined backfires at 1 epoch.** The combined strategy (S8) applies Weighted Sampler + Strong Augmentation + Remix + Balanced Softmax + cRT. Each component adds noise or regularization that helps with long training. At 1 epoch: (a) the model has barely learned anything, (b) Remix aggressively biases labels before features are meaningful, (c) cRT wastes epochs retraining a random classifier. The signal-to-noise ratio is terrible.
+
+**Expected behavior with more epochs (20+):** The ranking typically inverts. Combined/cRT methods pull ahead once features stabilize. Oversampling plateaus due to overfitting on repeated minority samples. Cost-sensitive methods find their equilibrium. Regularizers (Mixup, CutMix, Label Smoothing) prevent late-training overfitting.
 
 ### Accuracy Comparison
 

@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ResNet-50 on Imbalanced CIFAR-10</title>
+<script>MathJax={tex:{inlineMath:[['\\(','\\)']],displayMath:[['\\[','\\]']]}}</script>
+<script async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<style>
+:root{--bg:#ffffff;--fg:#1a1a2e;--muted:#6c757d;--accent:#4361ee;--accent2:#3a0ca3;
+--card:#f8f9fa;--border:#dee2e6;--code-bg:#f1f3f5;--success:#2d6a4f;--warn:#e76f51;
+--radius:8px;--shadow:0 2px 8px rgba(0,0,0,.08);--font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+--mono:"SF Mono",SFMono-Regular,Consolas,"Liberation Mono",Menlo,monospace}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);color:var(--fg);background:var(--bg);line-height:1.7;font-size:16px}
+.header{background:linear-gradient(135deg,var(--accent2),var(--accent));color:#fff;padding:2.5rem 2rem;text-align:center}
+.header h1{font-size:1.8rem;font-weight:700;margin-bottom:.5rem}
+.header p{font-size:.95rem;opacity:.9;max-width:700px;margin:0 auto}
+.tab-bar{display:flex;flex-wrap:wrap;gap:0;background:var(--card);border-bottom:2px solid var(--border);
+position:sticky;top:0;z-index:100;padding:0 1rem;overflow-x:auto}
+.tab-btn{padding:.85rem 1.2rem;border:none;background:none;cursor:pointer;font-size:.85rem;
+font-weight:600;color:var(--muted);white-space:nowrap;border-bottom:3px solid transparent;
+transition:all .2s}
+.tab-btn:hover{color:var(--accent);background:rgba(67,97,238,.05)}
+.tab-btn.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab-content{display:none;max-width:960px;margin:0 auto;padding:2rem 1.5rem 4rem}
+.tab-content.active{display:block}
+h2{font-size:1.5rem;color:var(--accent2);margin:2rem 0 1rem;padding-bottom:.5rem;border-bottom:2px solid var(--border)}
+h3{font-size:1.2rem;color:var(--fg);margin:1.8rem 0 .8rem}
+h4{font-size:1.05rem;margin:1.5rem 0 .6rem}
+p{margin-bottom:1rem}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+img{max-width:100%;height:auto;border-radius:var(--radius);margin:1rem 0;box-shadow:var(--shadow)}
+table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.88rem}
+th{background:var(--accent);color:#fff;padding:.65rem .8rem;text-align:left;font-weight:600}
+td{padding:.55rem .8rem;border-bottom:1px solid var(--border)}
+tr:nth-child(even){background:var(--card)}
+tr:hover{background:#e8ecf4}
+pre{background:var(--code-bg);border-radius:var(--radius);padding:1rem 1.2rem;overflow-x:auto;
+font-size:.82rem;line-height:1.6;margin:1rem 0;border:1px solid var(--border)}
+code{font-family:var(--mono);font-size:.85em}
+p code,li code,td code{background:var(--code-bg);padding:.15rem .4rem;border-radius:4px;font-size:.82em}
+blockquote{border-left:4px solid var(--accent);background:var(--card);padding:.8rem 1.2rem;
+margin:1rem 0;border-radius:0 var(--radius) var(--radius) 0;font-style:italic;color:#555}
+.method{background:#fff;border:1px solid var(--border);border-radius:var(--radius);
+margin:1.5rem 0;overflow:hidden;box-shadow:var(--shadow)}
+.method-head{background:var(--card);padding:.8rem 1.2rem;cursor:pointer;display:flex;
+justify-content:space-between;align-items:center;font-weight:600;font-size:1rem;
+border-bottom:1px solid var(--border);user-select:none}
+.method-head:hover{background:#e8ecf4}
+.method-head .arrow{transition:transform .2s;font-size:.8rem;color:var(--muted)}
+.method-head.open .arrow{transform:rotate(180deg)}
+.method-body{padding:1.2rem;display:none}
+.method-body.open{display:block}
+.tag{display:inline-block;font-size:.7rem;padding:.15rem .5rem;border-radius:12px;
+font-weight:600;margin-left:.5rem;vertical-align:middle}
+.tag-data{background:#d4edda;color:#155724}.tag-loss{background:#fff3cd;color:#856404}
+.tag-train{background:#d1ecf1;color:#0c5460}.tag-logit{background:#e2d5f1;color:#4a1a8a}
+.tag-combo{background:#f8d7da;color:#721c24}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1rem;margin:1rem 0}
+.metric-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);
+padding:1rem;text-align:center}
+.metric-card .val{font-size:1.6rem;font-weight:700;color:var(--accent)}
+.metric-card .label{font-size:.8rem;color:var(--muted);margin-top:.3rem}
+.columns{display:grid;grid-template-columns:1fr 1fr;gap:1.5rem;margin:1rem 0}
+@media(max-width:768px){.columns{grid-template-columns:1fr}.tab-btn{padding:.7rem .8rem;font-size:.78rem}}
+ul,ol{margin:0 0 1rem 1.5rem}
+li{margin-bottom:.4rem}
+hr{border:none;border-top:1px solid var(--border);margin:2rem 0}
+.footer{text-align:center;padding:2rem;color:var(--muted);font-size:.85rem;border-top:1px solid var(--border)}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Image Classification with ResNet-50 on Imbalanced CIFAR-10</h1>
+  <p>A from-scratch PyTorch implementation with 12 imbalance-handling strategies benchmarked side-by-side, organized by the taxonomy from Gao et al. (2025)</p>
+</div>
+
+<div class="tab-bar" id="tabBar">
+  <button class="tab-btn active" data-tab="overview">Overview</button>
+  <button class="tab-btn" data-tab="data-methods">Data Re-balancing</button>
+  <button class="tab-btn" data-tab="loss-methods">Cost-Sensitive</button>
+  <button class="tab-btn" data-tab="train-methods">Training Strategy</button>
+  <button class="tab-btn" data-tab="logit-methods">Logit Adjustment</button>
+  <button class="tab-btn" data-tab="benchmark">Benchmark</button>
+  <button class="tab-btn" data-tab="toolkit">Toolkit &amp; Setup</button>
+</div>
+
+<!-- ═══════════════════ TAB 1: OVERVIEW ═══════════════════ -->
+<div class="tab-content active" id="overview">
+
+<h2>Why Class Imbalance Matters</h2>
+<p>In real-world datasets, some classes naturally have far fewer samples than others. A medical dataset might have 10,000 healthy scans but only 50 disease cases. When a model trains on such data, it learns a simple shortcut: <strong>always predict the majority class</strong>.</p>
+
+<pre>The Problem:  airplane has 5,000 images, but truck has only 250.
+              The model learns to ignore trucks entirely.
+
+The Goal:     Force the model to learn ALL classes equally well,
+              even when some have 20x fewer training images.</pre>
+
+<p>We organize solutions using the taxonomy from <a href="https://doi.org/10.1007/s11704-025-50274-7">Gao et al. (2025)</a>, a comprehensive survey covering 200+ papers:</p>
+
+<pre>Where do we intervene?
+
+  [Data] ──&gt; [Model] ──&gt; [Loss Function] ──&gt; [Training Loop] ──&gt; [Prediction]
+    │              │              │                  │                  │
+    ▼              ▼              ▼                  ▼                  ▼
+  Cat.1          Cat.5         Cat.2              Cat.3              Cat.4
+  Re-balance    Ensemble     Cost-Sensitive     Training           Logit
+  the data      models       learning           Strategy           Adjustment</pre>
+
+<h2>Dataset</h2>
+<h3>Sample Images</h3>
+<img src="results/figures/sample_images.png" alt="Sample Images">
+
+<h3>Imbalanced Class Distribution (20:1 Ratio)</h3>
+<p>We apply <strong>exponential decay</strong> to CIFAR-10 to simulate a long-tail distribution:</p>
+<p>\[ n_c = n_{\max} \cdot \rho^{\frac{c}{K-1}}, \quad \rho = \frac{1}{20} \]</p>
+<img src="results/figures/class_distribution.png" alt="Class Distribution">
+
+<table>
+<tr><th>Class</th><th>Train Samples</th><th>Ratio</th><th>Without handling</th></tr>
+<tr><td>airplane</td><td>5,000</td><td>1.00x</td><td>Model learns this well</td></tr>
+<tr><td>automobile</td><td>3,584</td><td>0.72x</td><td>Slight degradation</td></tr>
+<tr><td>bird</td><td>2,569</td><td>0.51x</td><td>Noticeable drop</td></tr>
+<tr><td>cat</td><td>1,841</td><td>0.37x</td><td>Confused with dog</td></tr>
+<tr><td>deer</td><td>1,320</td><td>0.26x</td><td>Often misclassified</td></tr>
+<tr><td>dog</td><td>946</td><td>0.19x</td><td>Starts getting ignored</td></tr>
+<tr><td>frog</td><td>678</td><td>0.14x</td><td>Predicted as majority</td></tr>
+<tr><td>horse</td><td>486</td><td>0.10x</td><td>Nearly invisible</td></tr>
+<tr><td>ship</td><td>348</td><td>0.07x</td><td>Almost never predicted</td></tr>
+<tr><td>truck</td><td>250</td><td>0.05x</td><td>Completely ignored</td></tr>
+</table>
+<p><strong>Total training samples:</strong> N = 17,022 (down from 50,000 balanced).</p>
+
+<h2>Model Architecture</h2>
+<p>ResNet-50 built <strong>entirely from scratch</strong> using <code>torch.nn</code> — no <code>torchvision.models</code>.</p>
+<pre>Input (3x32x32) -&gt; Stem(7x7 conv, BN, ReLU, MaxPool)
+  -&gt; Layer1: Bottleneck x3  [64 -&gt; 256]
+  -&gt; Layer2: Bottleneck x4  [256 -&gt; 512,  stride=2]
+  -&gt; Layer3: Bottleneck x6  [512 -&gt; 1024, stride=2]
+  -&gt; Layer4: Bottleneck x3  [1024 -&gt; 2048, stride=2]
+  -&gt; Head: AdaptiveAvgPool -&gt; Flatten -&gt; Dropout -&gt; Linear(2048, 10)</pre>
+
+<p>Each <strong>Bottleneck</strong> block: \(\mathbf{y} = \sigma(\text{BN}(\text{Conv}_{1\times1} \to \text{Conv}_{3\times3} \to \text{Conv}_{1\times1}(\mathbf{x})) + \mathbf{x})\). <strong>~23.5M parameters.</strong></p>
+
+<h2>Formal Problem Statement</h2>
+<p>Let \(\mathcal{D} = \{(\mathbf{x}_i, y_i)\}_{i=1}^{N}\) with \(K\) classes. Standard ERM:</p>
+<p>\[\min_\theta \; \frac{1}{N} \sum_{i=1}^{N} \ell(f_\theta(\mathbf{x}_i), y_i)\]</p>
+<p>Under imbalance, class \(c\) contributes \(n_c / N\) to the gradient — minority classes contribute negligibly. This causes:</p>
+<ol>
+  <li><strong>Decision boundary bias:</strong> hyperplane shifts toward minority regions</li>
+  <li><strong>Representation collapse:</strong> backbone underallocates capacity to rare classes</li>
+</ol>
+</div>
+
+<!-- ═══════════════════ TAB 2: DATA RE-BALANCING ═══════════════════ -->
+<div class="tab-content" id="data-methods">
+<h2>Category 1: Data Re-balancing — <em>Fix the Data</em></h2>
+<blockquote>Modify the sampling distribution so the model receives balanced class exposure, changing the effective \(\tilde{P}\) without modifying \(\ell\) or \(f_\theta\).</blockquote>
+
+<div class="method">
+<div class="method-head open" onclick="toggleMethod(this)">
+  S1. Random Oversampling (WeightedRandomSampler) <span class="tag tag-data">Data</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body open">
+<p><strong>Problem:</strong> Under uniform sampling, \(P(\text{truck}) = 250/17022 = 1.5\%\). Truck gradients are washed out.</p>
+
+<p><strong>Formulation.</strong> Assign each sample weight \(w_i = 1/n_{y_i}\). The draw probability becomes:</p>
+<p>\[P(\text{draw } i) = \frac{1/n_{y_i}}{\sum_{c=1}^{K} n_c \cdot (1/n_c)} = \frac{1}{n_{y_i} \cdot K}\]</p>
+<p>Every <strong>class</strong> has equal probability \(1/K\).</p>
+
+<pre>Without sampler:      P(airplane) = 29.4%,   P(truck) = 1.5%
+With WeightedSampler: P(airplane) = 10.0%,   P(truck) = 10.0%  ← balanced!</pre>
+
+<p><strong>Gradient impact.</strong> Expected gradient becomes class-balanced:</p>
+<p>\[\mathbb{E}_{\tilde{P}}[\nabla_\theta \ell] = \frac{1}{K} \sum_{c=1}^{K} \mathbb{E}_{\mathbf{x} \sim \mathcal{D}_c}[\nabla_\theta \ell(f_\theta(\mathbf{x}), c)]\]</p>
+
+<p><strong>Failure mode:</strong> Each truck image is sampled ~20x more often than each airplane image. After enough epochs, the model memorizes the 250 truck images — overfitting on minority classes.</p>
+
+<p><strong>Config:</strong> <code>data.weighted_sampling: true</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S2. SMOTE (Synthetic Minority Over-sampling Technique) <span class="tag tag-data">Data</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Problem:</strong> Duplication gives no new information. Gradients for duplicates are identical.</p>
+
+<p><strong>Algorithm (Chawla et al., 2002):</strong></p>
+<pre>For each x_i ∈ X_min:
+  1. Find k nearest neighbors within X_min (L2 distance)
+  2. Randomly select neighbor x_nn
+  3. Sample λ ~ Uniform(0, 1)
+  4. x_new = x_i + λ · (x_nn - x_i)</pre>
+
+<p>\(\mathbf{x}_{\text{new}}\) lies on the <strong>line segment</strong> between \(\mathbf{x}_i\) and \(\mathbf{x}_{nn}\) in pixel space.</p>
+
+<pre>truck has 250 samples, airplane has 5000.
+target_ratio=1.0 → need 4750 synthetic truck images
+→ each of 250 trucks generates floor(4750/250) = 19 synthetics
+
+truck_42  = [0.3, 0.5, 0.2, ...]   (flattened 32×32×3 = 3072-dim)
+truck_nn  = [0.4, 0.4, 0.3, ...]   (nearest neighbor)
+λ = 0.7
+new_truck = 0.7 × truck_42 + 0.3 × truck_nn = [0.33, 0.47, 0.23, ...]</pre>
+
+<p><strong>Limitation:</strong> Pixel-space interpolation can produce blurry/ghostly images. Works best at low resolution (CIFAR-10's 32x32).</p>
+<p><strong>Complexity:</strong> \(O(m^2 \cdot d)\) for k-NN. Trivial for 250 samples at 3072 dimensions.</p>
+<p><strong>Config:</strong> <code>data.oversampling.method: "smote"</code>, <code>data.oversampling.k_neighbors: 5</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S3. ADASYN (Adaptive Synthetic Sampling) <span class="tag tag-data">Data</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Problem:</strong> SMOTE generates synthetics uniformly. Samples deep inside their cluster are already easy — wasted capacity. Borderline samples need more focus.</p>
+
+<p><strong>Algorithm (He et al., 2008).</strong> For each minority sample, compute difficulty:</p>
+<p>\[\Gamma_i = \frac{|\{\mathbf{x} \in \text{kNN}(\mathbf{x}_i) : \text{class}(\mathbf{x}) \neq \text{class}(\mathbf{x}_i)\}|}{k}\]</p>
+<ul>
+  <li>\(\Gamma_i \approx 0\): safe, surrounded by same class → few synthetics</li>
+  <li>\(\Gamma_i \approx 1\): borderline, surrounded by majority → many synthetics</li>
+</ul>
+<pre>truck_42:  neighbors = [truck, airplane, airplane, truck, airplane]
+           Γ = 3/5 = 0.6  (hard) → gets many synthetics
+
+truck_100: neighbors = [truck, truck, truck, truck, truck]
+           Γ = 0/5 = 0.0  (safe) → gets zero synthetics</pre>
+
+<p><strong>Risk:</strong> Amplifies noise if a borderline minority sample is an outlier or mislabeled.</p>
+<p><strong>Config:</strong> <code>data.oversampling.method: "adasyn"</code></p>
+</div></div>
+</div>
+
+<!-- ═══════════════════ TAB 3: COST-SENSITIVE ═══════════════════ -->
+<div class="tab-content" id="loss-methods">
+<h2>Category 2: Cost-Sensitive Learning — <em>Fix the Loss</em></h2>
+<blockquote>Modify the loss function \(\ell\) so errors on minority classes produce disproportionately large gradients. Training data remains unchanged.</blockquote>
+
+<div class="method">
+<div class="method-head open" onclick="toggleMethod(this)">
+  S4. Weighted Cross-Entropy <span class="tag tag-loss">Loss</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body open">
+<p><strong>Formulation.</strong> Assign weight \(w_c = N / (K \cdot n_c)\):</p>
+<p>\[\mathcal{L}_{\text{WCE}} = -\frac{1}{N} \sum_{i=1}^{N} w_{y_i} \cdot \log p_{y_i}\]</p>
+
+<p><strong>Gradient:</strong> \(\frac{\partial \mathcal{L}}{\partial z_c} = w_y \cdot (p_c - \mathbb{1}[c=y])\). Truck gradient amplified by 6.81x vs airplane's 0.34x.</p>
+
+<pre>Class weights w_c = N / (K × n_c):
+  airplane:  17022/(10×5000) = 0.340     truck: 17022/(10×250) = 6.809
+  Ratio: 6.809 / 0.340 = 20.0x  (exactly the imbalance ratio)</pre>
+
+<p><strong>Limitation:</strong> Weights are static. If truck is learned early, it still gets 6.81x gradients — can cause oscillation.</p>
+<p><strong>Config:</strong> <code>data.weighted_loss: true</code>, <code>loss.name: "ce"</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S5. Focal Loss <span class="tag tag-loss">Loss</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Formulation (Lin et al., 2017):</strong></p>
+<p>\[\mathcal{L}_{\text{FL}} = -\alpha_t \cdot (1 - p_t)^\gamma \cdot \log(p_t)\]</p>
+
+<p><strong>Gradient:</strong></p>
+<p>\[\frac{\partial \mathcal{L}_{\text{FL}}}{\partial p_t} = -\alpha_t \left[\gamma(1-p_t)^{\gamma-1}\log(p_t) + \frac{(1-p_t)^\gamma}{p_t}\right]\]</p>
+
+<table>
+<tr><th>\(p_t\)</th><th>\(\gamma=0\) (CE)</th><th>\(\gamma=1\)</th><th>\(\gamma=2\)</th><th>\(\gamma=5\)</th></tr>
+<tr><td>0.10 (hard)</td><td>1.000</td><td>0.900</td><td>0.810</td><td>0.590</td></tr>
+<tr><td>0.50</td><td>1.000</td><td>0.500</td><td>0.250</td><td>0.031</td></tr>
+<tr><td>0.90 (easy)</td><td>1.000</td><td>0.100</td><td>0.010</td><td>0.00001</td></tr>
+<tr><td>0.99</td><td>1.000</td><td>0.010</td><td>0.0001</td><td>~0</td></tr>
+</table>
+
+<p>With \(\gamma=2\): a 90%-confident sample gets <strong>1% of CE loss</strong>. A 10%-confident sample gets <strong>81%</strong>. The model concentrates on whatever it's currently getting wrong — which tends to be minority classes.</p>
+<p><strong>Why it helps imbalance:</strong> Easy majority examples are silenced, leaving gradient signal mostly from hard (minority) samples. <strong>Adaptive</strong> — unlike static weights, it adjusts as the model learns.</p>
+<p><strong>Config:</strong> <code>loss.name: "focal"</code>, <code>loss.gamma: 2.0</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S6. Class-Balanced Loss <span class="tag tag-loss">Loss</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Theoretical foundation (Cui et al., 2019).</strong> The <strong>effective number</strong> of samples:</p>
+<p>\[E_n = \frac{1 - \beta^n}{1 - \beta}, \quad \beta \in [0,1)\]</p>
+<p>\(\beta\) controls overlap between samples: \(\beta \to 0\) means no overlap (\(E_n = n\)); \(\beta \to 1\) means high redundancy.</p>
+<p>CB weight: \(w_c = \frac{1-\beta}{1-\beta^{n_c}}\), normalized and applied to CE or Focal.</p>
+
+<pre>With β = 0.9999:
+  airplane (n=5000): E = 3935 → many redundant samples
+  truck    (n=250):  E = 247  → nearly every sample is unique
+
+  CB ratio truck/airplane: 15.9x  (vs. naive 20.0x)</pre>
+
+<p><strong>CB-Focal combines both:</strong></p>
+<p>\[\mathcal{L}_{\text{CB-FL}} = -\frac{1-\beta}{1-\beta^{n_{y_i}}} \cdot (1-p_t)^\gamma \cdot \log(p_t)\]</p>
+<p>Static class reweighting (CB) + dynamic example-weighting (Focal).</p>
+<p><strong>Config:</strong> <code>loss.name: "cb"</code>, <code>loss.beta: 0.9999</code></p>
+</div></div>
+</div>
+
+<!-- ═══════════════════ TAB 4: TRAINING STRATEGY ═══════════════════ -->
+<div class="tab-content" id="train-methods">
+<h2>Category 3: Training Strategy — <em>Fix the Training Loop</em></h2>
+<blockquote>Modify the training procedure — label representation, data augmentation, or training schedule — without changing the loss formula.</blockquote>
+
+<div class="method">
+<div class="method-head open" onclick="toggleMethod(this)">
+  S7. Label Smoothing <span class="tag tag-train">Training</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body open">
+<p>Replace hard one-hot targets with soft targets:</p>
+<p>\[\mathbf{y}_{\text{smooth}} = (1-\varepsilon)\cdot\mathbf{e}_c + \frac{\varepsilon}{K}\cdot\mathbf{1}\]</p>
+<pre>Hard:     [0, 0, 0, 1, 0, 0, 0, 0, 0, 0]       ← "100% cat"
+Smoothed: [.01, .01, .01, .91, .01, .01, .01, .01, .01, .01]  ← "91% cat"</pre>
+<p>The model targets \(p_y = 0.91\) instead of 1.0 — logits converge to finite values. Prevents minority classes from receiving near-zero probability.</p>
+<p><strong>Config:</strong> <code>loss.name: "label_smoothing"</code>, <code>loss.smoothing: 0.1</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S8. Mixup <span class="tag tag-train">Training</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Formulation (Zhang et al., 2018):</strong></p>
+<p>\[\tilde{\mathbf{x}} = \lambda\mathbf{x}_i + (1-\lambda)\mathbf{x}_j, \quad \tilde{\mathcal{L}} = \lambda\cdot\ell(\hat{y},y_i) + (1-\lambda)\cdot\ell(\hat{y},y_j), \quad \lambda \sim \text{Beta}(\alpha,\alpha)\]</p>
+<pre>α = 0.1: U-shaped, λ near 0 or 1 (weak mixing)
+α = 0.4: moderately U-shaped (default)
+α = 1.0: Uniform(0,1) (any ratio equally likely)
+α = 2.0: bell-shaped around 0.5 (strong mixing)</pre>
+
+<p><strong>Theoretical basis:</strong> Vicinal Risk Minimization (VRM). Smooths decision boundaries by training on the convex hull of the training set.</p>
+<p><strong>Imbalance issue:</strong> When truck (\(\lambda=0.3\)) is mixed with airplane (\(1-\lambda=0.7\)), the truck gradient is scaled by 0.3 — minority signal is <em>suppressed</em>.</p>
+<p><strong>Config:</strong> <code>training.mixup.mode: "mixup"</code>, <code>training.mixup.alpha: 0.4</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S9. CutMix <span class="tag tag-train">Training</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Formulation (Yun et al., 2019).</strong> Binary mask \(\mathbf{M} \in \{0,1\}^{H\times W}\):</p>
+<p>\[\tilde{\mathbf{x}} = \mathbf{M} \odot \mathbf{x}_i + (1-\mathbf{M}) \odot \mathbf{x}_j, \quad \lambda = 1 - \frac{\text{box area}}{H \times W}\]</p>
+<pre>1. cut_ratio = sqrt(1 - λ)
+2. cut_h = H × cut_ratio,  cut_w = W × cut_ratio
+3. Center (cx, cy) ~ Uniform
+4. Paste patch from x_j into x_i</pre>
+<p>Preserves <strong>spatial coherence</strong>: uncut regions are unmodified, realistic pixels. Forces model to recognize objects from partial views.</p>
+<p><strong>Config:</strong> <code>training.mixup.mode: "cutmix"</code>, <code>training.mixup.alpha: 1.0</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S10. Remix — Imbalance-Aware Mixup <span class="tag tag-train">Training</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Problem:</strong> Standard Mixup uses same \(\lambda\) for image and label. Minority samples always get small label weight.</p>
+<p><strong>Formulation (Chou et al., 2020).</strong> Feature mixing unchanged; <strong>label mixing</strong> biased toward minority:</p>
+<p>\[\lambda_l = \begin{cases}\max(\lambda_f, \kappa) & \text{if } \lambda_f < \tau \text{ and } n_{y_a} \leq n_{y_b} \\\min(\lambda_f, 1-\kappa) & \text{if } \lambda_f < \tau \text{ and } n_{y_a} > n_{y_b} \\\lambda_f & \text{otherwise}\end{cases}\]</p>
+
+<pre>Pair: (truck, airplane), λ_f = 0.3
+
+Standard Mixup:  Loss = 0.3×L(truck) + 0.7×L(airplane)
+Remix (τ=0.5, κ=0.9):
+  λ_f=0.3 &lt; τ=0.5 → activate!
+  truck is minority → λ_l = max(0.3, 0.9) = 0.9
+  Loss = 0.9×L(truck) + 0.1×L(airplane)  ← truck gets 90%!</pre>
+
+<p><strong>Expected gradient boost:</strong> ~40% increase in minority gradient magnitude vs standard Mixup.</p>
+<p><strong>Config:</strong> <code>training.mixup.mode: "remix"</code>, <code>training.mixup.remix.tau: 0.5</code>, <code>training.mixup.remix.kappa: 0.9</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S11. Decoupled Training (cRT) <span class="tag tag-train">Training</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Key insight (Kang et al., 2020):</strong> Features learned on imbalanced data are actually high-quality. Only the linear classifier is biased — its weight norms satisfy \(\|\mathbf{w}_{\text{airplane}}\| \gg \|\mathbf{w}_{\text{truck}}\|\).</p>
+
+<pre>Algorithm: cRT (Classifier Re-Training)
+
+Stage 1 — Representation learning (imbalanced data):
+  Train full model with standard CE. Backbone learns rich features.
+
+Stage 2 — Classifier re-training:
+  FREEZE backbone (no gradient to backbone)
+  Retrain ONLY classifier head (W, b) with balanced sampling
+  Use higher lr (0.01 vs 0.001) — only 20K params to optimize</pre>
+
+<p><strong>Why it works:</strong> The backbone extracts visual primitives shared across classes. The classifier bias comes from majority weight vectors having larger norms (20x more gradient updates). Stage 2 equalizes the norms by giving each class equal gradient.</p>
+<p><strong>Config:</strong> <code>training.crt.enabled: true</code>, <code>training.crt.classifier_epochs: 5</code>, <code>training.crt.lr: 0.01</code></p>
+</div></div>
+</div>
+
+<!-- ═══════════════════ TAB 5: LOGIT ADJUSTMENT ═══════════════════ -->
+<div class="tab-content" id="logit-methods">
+<h2>Category 4: Logit Adjustment — <em>Fix the Predictions</em></h2>
+<blockquote>Adjust the model's output logits to compensate for the skewed class prior. Converts biased posterior into balanced posterior.</blockquote>
+
+<h3>Bayesian Derivation</h3>
+<p>By Bayes' theorem: \(P_{\text{train}}(y|\mathbf{x}) = \frac{P(\mathbf{x}|y) \cdot P_{\text{train}}(y)}{P(\mathbf{x})}\)</p>
+<p>Under balanced prior \(P_{\text{bal}}(y) = 1/K\):</p>
+<p>\[z_c^{\text{adjusted}} = z_c - \log P_{\text{train}}(c) = z_c - \log(n_c / N)\]</p>
+
+<div class="method">
+<div class="method-head open" onclick="toggleMethod(this)">
+  S12. Balanced Softmax <span class="tag tag-logit">Logit Adj.</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body open">
+<p><strong>Formulation (Ren et al., 2020):</strong></p>
+<p>\[\mathcal{L}_{\text{BS}} = -\log\frac{\exp(z_y + \log n_y)}{\sum_j \exp(z_j + \log n_j)}\]</p>
+<p>Gradient: \(\frac{\partial \mathcal{L}_{\text{BS}}}{\partial z_c} = p_c^{\text{BS}} - \mathbb{1}[c=y]\)</p>
+
+<pre>During TRAINING: logits are shifted by log(n_c)
+  → optimal z* encode log P(x|c) (class-conditional likelihood)
+  → removes prior bias from learned logits
+
+At TEST time: raw logits z are used directly
+  → produce balanced predictions because they encode likelihoods</pre>
+
+<p><strong>No hyperparameters</strong> beyond class counts. Theoretically principled Bayesian correction.</p>
+<p><strong>Config:</strong> <code>loss.name: "balanced_softmax"</code></p>
+</div></div>
+
+<div class="method">
+<div class="method-head" onclick="toggleMethod(this)">
+  S13. Logit Adjustment (Post-hoc) <span class="tag tag-logit">Logit Adj.</span> <span class="arrow">▼</span>
+</div>
+<div class="method-body">
+<p><strong>Formulation (Menon et al., 2021).</strong> Generalizes Balanced Softmax with temperature \(\tau\):</p>
+<p>\[\mathcal{L}_{\text{LA}} = -\log\frac{\exp(z_y + \tau\cdot\log\pi_y)}{\sum_j \exp(z_j + \tau\cdot\log\pi_j)}\]</p>
+
+<table>
+<tr><th>\(\tau\)</th><th>Effect</th><th>Interpretation</th></tr>
+<tr><td>0.0</td><td>No adjustment</td><td>Standard CE</td></tr>
+<tr><td>1.0</td><td>Full correction</td><td>= Balanced Softmax (Bayes-optimal)</td></tr>
+<tr><td>&lt; 1.0</td><td>Partial</td><td>Conservative correction</td></tr>
+<tr><td>&gt; 1.0</td><td>Over-correction</td><td>Aggressively favors minority</td></tr>
+</table>
+
+<p><strong>Fisher consistency:</strong> At \(\tau=1\), the minimizer satisfies \(f^*(\mathbf{x}) = \arg\max_c P(\mathbf{x}|c)\) — the <strong>Bayes-optimal</strong> classifier under balanced priors.</p>
+<p><strong>Config:</strong> <code>loss.name: "logit_adjust"</code>, <code>loss.tau: 1.0</code></p>
+</div></div>
+
+<hr>
+
+<h2>Category 5: Combined — <em>Stack the Best of Each</em></h2>
+<blockquote>Combine orthogonal interventions from different categories for additive benefits.</blockquote>
+
+<table>
+<tr><th>Layer</th><th>Technique</th><th>Mechanism</th></tr>
+<tr><td><strong>Sampling</strong></td><td>WeightedRandomSampler</td><td>Equalizes class frequency in batches</td></tr>
+<tr><td><strong>Augmentation</strong></td><td>ColorJitter + RandomErasing</td><td>Expands minority visual diversity</td></tr>
+<tr><td><strong>Augmentation</strong></td><td>Remix</td><td>Minority-biased label mixing</td></tr>
+<tr><td><strong>Loss</strong></td><td>Balanced Softmax</td><td>Log-prior logit correction</td></tr>
+<tr><td><strong>Loss</strong></td><td>Class weights</td><td>Inverse-frequency gradient scaling</td></tr>
+<tr><td><strong>Training</strong></td><td>cRT</td><td>Freeze backbone, retrain classifier</td></tr>
+</table>
+
+<h3>What Conflicts</h3>
+<ul>
+  <li><strong>Weighted CE + CB Loss:</strong> Combined weight = \(w_c^{\text{CE}} \times w_c^{\text{CB}}\) → extreme values</li>
+  <li><strong>Mixup + CutMix:</strong> Doubly-augmented, unrealistic inputs</li>
+  <li><strong>Oversampling + Remix:</strong> Oversampling already balances data; Remix over-corrects</li>
+</ul>
+<p><strong>Config:</strong> <code>configs/s8_combined_best.yaml</code></p>
+</div>
+
+<!-- ═══════════════════ TAB 6: BENCHMARK ═══════════════════ -->
+<div class="tab-content" id="benchmark">
+<h2>Benchmark Results &amp; Analysis</h2>
+<p>All 12 strategies trained on the same imbalanced CIFAR-10 (20:1 ratio), identical hyperparameters (Adam, lr=0.001, cosine scheduler). <strong>1-epoch</strong> runs.</p>
+
+<h3>Summary</h3>
+<img src="results/figures/comparison_summary.png" alt="Summary Table">
+
+<table>
+<tr><th>#</th><th>Strategy</th><th>Accuracy</th><th>Macro F1</th><th>Category</th><th>Why this result?</th></tr>
+<tr><td>1</td><td>Weighted CE</td><td>27.12%</td><td>0.2397</td><td>Cost-Sensitive</td><td>Static weights cause instability early</td></tr>
+<tr style="background:#d4edda"><td>2</td><td><strong>Oversampling</strong></td><td><strong>35.59%</strong></td><td><strong>0.3259</strong></td><td><strong>Data</strong></td><td><strong>Balanced batches from step 1</strong></td></tr>
+<tr><td>3</td><td>Focal Loss</td><td>26.34%</td><td>0.2015</td><td>Cost-Sensitive</td><td>At epoch 1, everything is "hard"</td></tr>
+<tr><td>4</td><td>CB Loss</td><td>27.88%</td><td>0.2379</td><td>Cost-Sensitive</td><td>Better calibrated but needs more time</td></tr>
+<tr><td>5</td><td>Label Smoothing</td><td>24.50%</td><td>0.1486</td><td>Training</td><td>Regularizer, not direct fix</td></tr>
+<tr><td>6</td><td>Mixup</td><td>24.40%</td><td>0.1413</td><td>Training</td><td>Can't decompose mixed signals yet</td></tr>
+<tr><td>7</td><td>CutMix</td><td>22.81%</td><td>0.1316</td><td>Training</td><td>Partial images harder to learn</td></tr>
+<tr><td>8</td><td>Combined</td><td>16.59%</td><td>0.0868</td><td>Combined</td><td>Too many regularizers + cRT overhead</td></tr>
+<tr><td>9</td><td>Remix</td><td>10.27%</td><td>0.0234</td><td>Training</td><td>Aggressive κ=0.9 without learned features</td></tr>
+<tr><td>10</td><td>Bal. Softmax</td><td>28.31%</td><td>0.2542</td><td>Logit Adj.</td><td>Instant mathematical correction</td></tr>
+<tr><td>11</td><td>Logit Adj.</td><td>28.31%</td><td>0.2542</td><td>Logit Adj.</td><td>= Balanced Softmax at τ=1.0</td></tr>
+<tr><td>12</td><td>Decoupled cRT</td><td>24.52%</td><td>0.1420</td><td>Training</td><td>1 epoch too little for backbone</td></tr>
+</table>
+
+<h3>Analysis: Convergence Speed by Category</h3>
+<pre>Speed of convergence at 1 epoch:
+
+  Data-level ▸▸▸▸▸▸▸▸▸▸  (immediate — changes distribution before training)
+  Logit Adj  ▸▸▸▸▸▸▸▸    (immediate — mathematical correction, no learning)
+  Cost-Sens  ▸▸▸▸▸▸      (fast — reweights gradients but needs a few epochs)
+  Regulariz  ▸▸▸          (slow — prevents overfitting, not the problem yet)
+  Combined   ▸            (slowest — many components need time to stabilize)</pre>
+
+<h3>Key Insights</h3>
+<ol>
+  <li><strong>Data-level methods dominate at 1 epoch.</strong> Oversampling (35.59%) fixes the distribution before training starts.</li>
+  <li><strong>Logit adjustment is the best "free lunch".</strong> Balanced Softmax (28.31%) just adds log(n_c) — instant correction, no extra data.</li>
+  <li><strong>Focal Loss needs time.</strong> At epoch 1, \(p_t \approx 0.1\) for all classes. Modulator \((1-0.1)^2 = 0.81\) is identical everywhere — no differentiation yet.</li>
+  <li><strong>Combined strategies backfire early.</strong> Stacking Remix + cRT + augmentation overwhelms a random-init model.</li>
+  <li><strong>With 20+ epochs:</strong> ranking typically inverts. Combined/cRT pull ahead; Oversampling plateaus from overfitting.</li>
+</ol>
+
+<h3>Accuracy Comparison</h3>
+<img src="results/figures/comparison_accuracy.png" alt="Accuracy Comparison">
+
+<h3>Macro F1 Comparison</h3>
+<img src="results/figures/comparison_f1.png" alt="F1 Comparison">
+
+<h3>Training Curves</h3>
+<img src="results/figures/comparison_training.png" alt="Training Curves">
+
+<h3>Per-Class F1 Heatmap</h3>
+<img src="results/figures/comparison_per_class_f1.png" alt="Per-Class F1 Heatmap">
+<p>Minority classes (frog, horse, ship, truck) have near-zero F1 across most strategies. Oversampling is the only one achieving meaningful minority recall at 1 epoch.</p>
+</div>
+
+<!-- ═══════════════════ TAB 7: TOOLKIT & SETUP ═══════════════════ -->
+<div class="tab-content" id="toolkit">
+
+<h2>Imbalanced Data Toolkit</h2>
+<p>Standalone modular library (<code>imbalance_toolkit/</code>) implementing the full taxonomy from Gao et al. (2025). Config-driven via <strong>Factory Pattern</strong>:</p>
+<pre>import imbalance_toolkit
+
+sampler  = imbalance_toolkit.create({"method": "SMOTE", "k_neighbors": 5})
+loss_fn  = imbalance_toolkit.create({"loss": "FocalLoss", "gamma": 2.0})
+trainer  = imbalance_toolkit.create({"trainer": "cRT", "model": model})</pre>
+
+<table>
+<tr><th>Category</th><th>Class</th><th>Paper</th><th>Description</th></tr>
+<tr><td rowspan="5"><strong>Data</strong></td><td><code>SMOTE</code></td><td>Chawla 2002</td><td>k-NN interpolation</td></tr>
+<tr><td><code>ADASYN</code></td><td>He 2008</td><td>Adaptive SMOTE</td></tr>
+<tr><td><code>VAESampler</code></td><td>Wan 2017</td><td>VAE-based generation</td></tr>
+<tr><td><code>Remix</code></td><td>Chou 2020</td><td>Minority-biased Mixup</td></tr>
+<tr><td><code>BalancedMixup</code></td><td>Galdran 2021</td><td>Dual-sampler Mixup</td></tr>
+<tr><td rowspan="3"><strong>Repr.</strong></td><td><code>TripletLoss</code></td><td>Schroff 2015</td><td>Pull same-class, push diff-class</td></tr>
+<tr><td><code>ContrastiveLoss</code></td><td>—</td><td>Pair-wise margin loss</td></tr>
+<tr><td><code>SupConLoss</code></td><td>Khosla 2020</td><td>Supervised contrastive</td></tr>
+<tr><td rowspan="6"><strong>Strategy</strong></td><td><code>DecoupledTrainer</code></td><td>Kang 2020</td><td>cRT two-stage</td></tr>
+<tr><td><code>BalancedSoftmaxLoss</code></td><td>Ren 2020</td><td>Log-prior logit shift</td></tr>
+<tr><td><code>LogitAdjustmentLoss</code></td><td>Menon 2021</td><td>Parameterized logit shift</td></tr>
+<tr><td><code>ClassWeightedCE</code></td><td>—</td><td>Inverse-freq CE</td></tr>
+<tr><td><code>FocalLoss</code></td><td>Lin 2017</td><td>(1-p_t)^γ modulation</td></tr>
+<tr><td><code>ClassBalancedLoss</code></td><td>Cui 2019</td><td>Effective-number reweighting</td></tr>
+<tr><td rowspan="2"><strong>Ensemble</strong></td><td><code>ImbalancedBagging</code></td><td>Wang 2009</td><td>Balanced-subset bagging</td></tr>
+<tr><td><code>ImbalancedBoosting</code></td><td>Chawla 2003</td><td>Adaptive boosting</td></tr>
+<tr><td rowspan="5"><strong>Metrics</strong></td><td><code>macro_f1</code></td><td>—</td><td>Class-averaged F1</td></tr>
+<tr><td><code>g_mean</code></td><td>—</td><td>Geometric mean of recalls</td></tr>
+<tr><td><code>pr_auc</code></td><td>—</td><td>Precision-Recall AUC</td></tr>
+<tr><td><code>balanced_accuracy</code></td><td>—</td><td>Mean of per-class recalls</td></tr>
+<tr><td><code>mcc_score</code></td><td>—</td><td>Matthews Correlation Coefficient</td></tr>
+</table>
+
+<hr>
+
+<h2>Configuration Reference</h2>
+<table>
+<tr><th>Technique</th><th>Config Key</th><th>Values</th><th>Default</th></tr>
+<tr><td>Long-tail</td><td><code>data.imbalance.enabled</code></td><td>true/false</td><td>true</td></tr>
+<tr><td>Ratio</td><td><code>data.imbalance.ratio</code></td><td>float</td><td>20</td></tr>
+<tr><td>Weighted Sampler</td><td><code>data.weighted_sampling</code></td><td>true/false</td><td>true</td></tr>
+<tr><td>Weighted Loss</td><td><code>data.weighted_loss</code></td><td>true/false</td><td>true</td></tr>
+<tr><td>SMOTE/ADASYN</td><td><code>data.oversampling.method</code></td><td>none/smote/adasyn</td><td>none</td></tr>
+<tr><td>Loss function</td><td><code>loss.name</code></td><td>ce, focal, cb, label_smoothing, cb_focal, balanced_softmax, logit_adjust</td><td>cb_focal</td></tr>
+<tr><td>Focal gamma</td><td><code>loss.gamma</code></td><td>float</td><td>2.0</td></tr>
+<tr><td>CB beta</td><td><code>loss.beta</code></td><td>float</td><td>0.9999</td></tr>
+<tr><td>Smoothing</td><td><code>loss.smoothing</code></td><td>float</td><td>0.1</td></tr>
+<tr><td>Logit tau</td><td><code>loss.tau</code></td><td>float</td><td>1.0</td></tr>
+<tr><td>Mixup mode</td><td><code>training.mixup.mode</code></td><td>none/mixup/cutmix/remix</td><td>none</td></tr>
+<tr><td>Remix kappa</td><td><code>training.mixup.remix.kappa</code></td><td>float</td><td>0.9</td></tr>
+<tr><td>cRT enabled</td><td><code>training.crt.enabled</code></td><td>true/false</td><td>false</td></tr>
+<tr><td>cRT epochs</td><td><code>training.crt.classifier_epochs</code></td><td>int</td><td>5</td></tr>
+</table>
+
+<hr>
+
+<h2>Project Structure</h2>
+<pre>img_cls/
+├── imbalance_toolkit/        # Standalone library (19 components)
+│   ├── factory.py            # Config-driven Factory Pattern
+│   ├── sampling/             # SMOTE, ADASYN, VAE, Remix, BalancedMixup
+│   ├── representation/       # TripletLoss, ContrastiveLoss, SupCon
+│   ├── strategies/           # cRT, BalancedSoftmax, LogitAdj, Focal, CB
+│   ├── ensembles/            # Bagging, Boosting wrappers
+│   └── evaluation/           # Macro-F1, G-Mean, PR-AUC, MCC
+├── configs/                  # default.yaml + s1..s12_*.yaml
+├── scripts/                  # train, evaluate, predict, visualize, run_all, compare
+├── src/
+│   ├── data/                 # Dataset, transforms, DataLoader, imbalance, SMOTE
+│   ├── models/               # ResNet from scratch, SimpleCNN, factory
+│   ├── training/             # Trainer, losses, mixup/remix, optimizer, scheduler
+│   ├── evaluation/           # Accuracy, F1, confusion matrix
+│   └── utils/                # Config, logger, helpers
+├── results/figures/          # All visualizations
+└── tests/</pre>
+
+<hr>
+
+<h2>Setup &amp; Usage</h2>
+
+<h3>Installation</h3>
+<pre>conda create -n img_cls python=3.11 -y
+conda activate img_cls
+pip install -r requirements.txt</pre>
+
+<h3>Run a Single Strategy</h3>
+<pre>python scripts/train.py --config configs/s3_focal.yaml
+python scripts/evaluate.py --config configs/s3_focal.yaml \
+    --checkpoint results/s3_focal/checkpoints/best.pth</pre>
+
+<h3>Run All 12 Strategies</h3>
+<pre>python scripts/run_all.py --epochs 20</pre>
+
+<h3>Generate Comparison Charts</h3>
+<pre>python scripts/compare.py</pre>
+
+<h3>Override from CLI</h3>
+<pre>python scripts/train.py --config configs/s3_focal.yaml \
+    --override training.epochs=50 loss.gamma=3.0</pre>
+
+<hr>
+
+<h2>Supported Models</h2>
+<table>
+<tr><th>Model</th><th>Config</th><th>Params</th><th>Block</th></tr>
+<tr><td>SimpleCNN</td><td><code>simple_cnn</code></td><td>~200K</td><td>Conv+BN</td></tr>
+<tr><td>ResNet-18</td><td><code>resnet18</code></td><td>~11M</td><td>BasicBlock</td></tr>
+<tr><td>ResNet-34</td><td><code>resnet34</code></td><td>~21M</td><td>BasicBlock</td></tr>
+<tr><td>ResNet-50</td><td><code>resnet50</code></td><td>~23.5M</td><td>Bottleneck</td></tr>
+<tr><td>ResNet-101</td><td><code>resnet101</code></td><td>~42.5M</td><td>Bottleneck</td></tr>
+</table>
+
+<hr>
+
+<h2>References</h2>
+<ol>
+<li>He et al., 2016 — <a href="https://arxiv.org/abs/1512.03385">Deep Residual Learning</a></li>
+<li>Chawla et al., 2002 — <a href="https://arxiv.org/abs/1106.1813">SMOTE</a></li>
+<li>He et al., 2008 — <a href="https://doi.org/10.1109/IJCNN.2008.4633969">ADASYN</a></li>
+<li>Wan et al., 2017 — <a href="https://doi.org/10.1109/SSCI.2017.8285168">VAE for imbalanced learning</a></li>
+<li>Chou et al., 2020 — <a href="https://arxiv.org/abs/2007.03943">Remix</a></li>
+<li>Galdran et al., 2021 — <a href="https://arxiv.org/abs/2109.09350">Balanced-MixUp</a></li>
+<li>Lin et al., 2017 — <a href="https://arxiv.org/abs/1708.02002">Focal Loss</a></li>
+<li>Cui et al., 2019 — <a href="https://arxiv.org/abs/1901.05555">Class-Balanced Loss</a></li>
+<li>Schroff et al., 2015 — <a href="https://arxiv.org/abs/1503.03832">FaceNet / Triplet Loss</a></li>
+<li>Khosla et al., 2020 — <a href="https://arxiv.org/abs/2004.11362">SupCon</a></li>
+<li>Kang et al., 2020 — <a href="https://arxiv.org/abs/1910.09217">Decoupled Training (cRT)</a></li>
+<li>Ren et al., 2020 — <a href="https://arxiv.org/abs/2007.10740">Balanced Softmax</a></li>
+<li>Menon et al., 2021 — <a href="https://arxiv.org/abs/2007.07314">Logit Adjustment</a></li>
+<li>Zhang et al., 2018 — <a href="https://arxiv.org/abs/1710.09412">Mixup</a></li>
+<li>Yun et al., 2019 — <a href="https://arxiv.org/abs/1905.04899">CutMix</a></li>
+<li><strong>Gao et al., 2025</strong> — <a href="https://doi.org/10.1007/s11704-025-50274-7">A comprehensive survey on imbalanced data learning</a></li>
+</ol>
+</div>
+
+<div class="footer">
+  MIT License &middot; Built with PyTorch &middot; ResNet-50 from scratch
+</div>
+
+<script>
+document.querySelectorAll('.tab-btn').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c=>c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(btn.dataset.tab).classList.add('active');
+    window.scrollTo({top:document.querySelector('.tab-bar').offsetTop,behavior:'smooth'});
+    if(typeof MathJax!=='undefined')MathJax.typeset();
+  });
+});
+function toggleMethod(el){
+  el.classList.toggle('open');
+  el.nextElementSibling.classList.toggle('open');
+}
+</script>
+</body>
+</html>
